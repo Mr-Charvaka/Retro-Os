@@ -95,10 +95,12 @@ chmod +x build.sh
 qemu-system-i386 -drive format=raw,file=os.img -serial stdio -m 512
 ```
 
----
 **Demo:**
 
-![sample view ](https://prnt.sc/A0eP73HOOTGY)
+--- 
+<img width="1024" height="770" alt="3" src="https://github.com/user-attachments/assets/bdb7a9a6-3dd3-4cfa-a4bd-8f26ff2805a7" />
+<img width="1026" height="771" alt="2" src="https://github.com/user-attachments/assets/247b74df-2a6f-49d3-bdc7-69cdffff7708" />
+<img width="1024" height="831" alt="1" src="https://github.com/user-attachments/assets/994d1538-4e37-4eea-9990-35019c292daf" />
 
 ---
 ## 🎮 Terminal Commands
