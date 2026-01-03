@@ -30,250 +30,153 @@
 #include "heap.h"
 #include "memory.h"
 #include "paging.h"
+#include "pmm.h"
 #include "process.h"
+#include "slab.h"
 #include "socket.h"
 #include "syscall.h"
 #include "tsc.h"
 #include "tty.h"
 
-// Memory & Paging headers must be early
-#include "memory.h"
-#include "paging.h"
-#include "pmm.h"
-
 extern "C" void cpp_kernel_entry();
-
-extern u32 _kernel_end;
+extern "C" void __cxx_global_ctor_init();
 
 //-------------------------------------------------------------------
-// Helper: enable the x87 FPU (prevents #NM – Coprocessor Segment Overrun)
+// Hardware Exception Handlers
 //-------------------------------------------------------------------
 static void enable_fpu(void) {
-  // Clear TS flag (task‑switched)
   asm volatile("clts");
-  // Clear EM and MP bits in CR0
   uint32_t cr0;
   asm volatile("mov %%cr0, %0" : "=r"(cr0));
-  cr0 &= ~0x2;      // EM  (bit 1)
-  cr0 &= ~0x200000; // MP  (bit 21)
+  cr0 &= ~0x2;
+  cr0 &= ~0x200000;
   asm volatile("mov %0, %%cr0" ::"r"(cr0));
-  // Initialise the FPU
   asm volatile("fninit");
 }
 
-//-------------------------------------------------------------------
-// Double Fault handler
-//-------------------------------------------------------------------
 void isr8_handler(registers_t *regs) {
   (void)regs;
   serial_log("FATAL: DOUBLE FAULT!");
-  // Check for stack overflow or recursion
   for (;;)
     ;
 }
 
-//-------------------------------------------------------------------
-// FPU handler
-//-------------------------------------------------------------------
 void isr9_handler(registers_t *regs) {
   (void)regs;
-  serial_log("EXCEPTION: #NM (FPU not available) – enabling now");
+  serial_log("EXCEPTION: #NM (FPU not available)");
   enable_fpu();
 }
 
-//-------------------------------------------------------------------
-// Test thread (unchanged from earlier)
-//-------------------------------------------------------------------
-void test_thread() {
-  u32 cs;
-  asm volatile("mov %%cs, %0" : "=r"(cs));
-  serial_log_hex("THREAD: Before CS: ", cs);
-
-  enter_user_mode();
-
-  asm volatile("mov %%cs, %0" : "=r"(cs));
-  serial_log_hex("THREAD: After CS: ", cs);
-
-  serial_log("THREAD: Triggering Syscall 0 (Print)...");
-  const char *msg = "Hello from Ring 3 via Syscall!";
-  asm volatile("mov $0, %%eax; mov %0, %%ebx; int $0x80" ::"r"(msg)
-               : "eax", "ebx");
-  serial_log("THREAD: Syscall returned.");
-
-  while (1) {
-    for (int i = 0; i < 1000000; i++)
-      ;
-  }
-}
-
 //===================================================================
-// Kernel entry point
+// Kernel main
 //===================================================================
 int main() {
   init_serial();
-  serial_log("KERNEL: Booting Custom OS...");
+  serial_log("KERNEL: Main Entry point reached.");
+  serial_log("KERNEL: Booting Higher-Half Retro-OS...");
 
-  // --------------------------------------------------------------
-  // Basic CPU/interrupt setup
-  // --------------------------------------------------------------
+  // 0. Early CPU Setup to catch faults
+  serial_log("KERNEL: Init GDT...");
   init_gdt();
-  isr_install(); // installs ISRs 0-31
-  irq_install(); // installs IRQs 32-47, remaps PIC/APIC
+  serial_log("KERNEL: Init ISRs...");
+  isr_install();
 
-  // Register critical handlers
+  // 1. Core Memory setup (Before almost everything else)
+  serial_log("KERNEL: Init Placement Heap at 4MB...");
+  init_memory(PHYS_TO_VIRT(0x00400000)); // Move to 4MB
+
+  serial_log("KERNEL: Init PMM at 5MB...");
+  uint32_t mem_size = 512 * 1024 * 1024;
+  uint32_t *bitmap_addr = (uint32_t *)PHYS_TO_VIRT(0x00500000); // Move to 5MB
+  pmm_init(mem_size, bitmap_addr);
+
+  pmm_mark_region_used(0x0, 0x100000);      // Low Memory
+  pmm_mark_region_used(0x100000, 0x300000); // Kernel (Reserved up to 4MB)
+  pmm_mark_region_used(0x400000, 0x100000); // Placement Heap (at 4MB)
+  pmm_mark_region_used(VIRT_TO_PHYS(bitmap_addr), 16384);
+  pmm_mark_region_used(0x01000000, 0x20000000); // Kernel Heap Physical (512MB)
+
+  // 3. Initialize full paging (Transitions from boot mapping to unified map)
+  serial_log("KERNEL: Init Paging...");
+  init_paging();
+
+  // 4. Post-paging setup
+  init_syscalls();
   register_interrupt_handler(8, (isr_t)isr8_handler);
   register_interrupt_handler(9, (isr_t)isr9_handler);
 
-  init_syscalls();
-  serial_log("KERNEL: Interrupts & Syscalls & GDT Initialized.");
+  serial_log("KERNEL: Interrupts & Syscalls & GDT Ready.");
 
-  // Enable interrupts for the rest of boot
-  asm volatile("sti");
+  // 5. Hardware Interface initialization
+  irq_install(); // ACPI / APIC / IO-APIC
 
-  // Drivers
+  // Initialize input before enabling interrupts
   init_keyboard();
   init_mouse();
+
+  serial_log("KERNEL: Enabling global interrupts...");
+  asm volatile("sti");
+
   hpet_init();
   tsc_calibrate();
-  serial_log("KERNEL: Drivers & Timers Initialized.");
+  serial_log("KERNEL: Drivers & Timers Active.");
 
-  // --------------------------------------------------------------
   enable_fpu();
 
-  // ... (previous includes)
-
-  // --------------------------------------------------------------
-  // Early placement heap (2 MiB) – needed for kmalloc before paging
-  // --------------------------------------------------------------
-  init_memory(0x200000); // 2 MiB placement heap
-  kmalloc_align_page();
-
-  // --------------------------------------------------------------
-  // PMM Initialization
-  // --------------------------------------------------------------
-  // We place the bitmap at 3MB to be safe (after placement heap usage)
-  // Total Memory: 512MB (as set in QEMU).
-  uint32_t mem_size = 512 * 1024 * 1024;
-  uint32_t *bitmap_addr = (uint32_t *)0x00300000;
-  pmm_init(mem_size, bitmap_addr);
-
-  // Initially, ALL memory is FREE after pmm_init.
-  // Now mark specific regions as USED:
-
-  // 1. Low Memory (0-1MB): BIOS, IVT, real mode stuff
-  pmm_mark_region_used(0x0, 0x100000);
-
-  // 2. Kernel Code/Data (1MB-2MB)
-  pmm_mark_region_used(0x100000, 0x100000);
-
-  // 3. Placement Heap (2MB-3MB)
-  pmm_mark_region_used(0x200000, 0x100000);
-
-  // 4. PMM Bitmap (3MB + 16KB)
-  // Size = 512MB / 4KB / 8 = 16KB
-  pmm_mark_region_used((uint32_t)bitmap_addr, 16384);
-
-  // 5. Kernel Heap (16MB-272MB = 256MB)
-  // This is a LARGE region owned by kmalloc
-  pmm_mark_region_used(0x01000000, 0x10000000);
-
-  // Memory layout summary:
-  // 0x00000000 - 0x00100000 (1MB): Low memory (USED)
-  // 0x00100000 - 0x00200000 (1MB): Kernel (USED)
-  // 0x00200000 - 0x00300000 (1MB): Placement heap (USED)
-  // 0x00300000 - 0x00304000 (16KB): PMM Bitmap (USED)
-  // 0x00304000 - 0x01000000 (~13MB): FREE for PMM
-  // 0x01000000 - 0x11000000 (256MB): Kernel Heap (USED)
-  // 0x11000000 - 0x20000000 (240MB): FREE for PMM (user processes)
-
-  pmm_print_stats(); // Show initial memory state
-
-  // --------------------------------------------------------------
-  // Verify C++ runtime (calls constructors, etc.)
-  // --------------------------------------------------------------
-  serial_log("KERNEL: Testing C++ Runtime...");
-  cpp_kernel_entry();
-
-  // --------------------------------------------------------------
-  // Enable paging (identity‑map 0‑256 MiB)
-  // --------------------------------------------------------------
-  init_paging();
-
-  // --------------------------------------------------------------
-  // Heap Init
-  // --------------------------------------------------------------
-  serial_log("KERNEL: Initializing Heap (16MB to 272MB)...");
-  init_kheap(0x01000000, 0x11000000, 0x11000000);
-  set_heap_status(1); // Crucial!
-
-// Enable Slab
-#include "slab.h"
+  // 6. Heap & Filesystem - 512MB heap from 16MB to 528MB
+  init_kheap(PHYS_TO_VIRT(0x01000000), PHYS_TO_VIRT(0x21000000),
+             PHYS_TO_VIRT(0x21000000));
+  set_heap_status(1);
   slab_init();
   extern int slab_is_initialized;
   slab_is_initialized = 1;
 
-  serial_log("KERNEL: Heap enabled.");
+  // Initialize C++ global constructors (required for vtables)
+  __cxx_global_ctor_init();
 
-  // --------------------------------------------------------------
-  // Initialise the FAT16 filesystem (required for later work)
-  // --------------------------------------------------------------
   fat16_init();
   vfs_root = fat16_vfs_init();
   vfs_dev = devfs_init();
-  fat16_list_root();
   socket_init();
   tty_init();
 
-  // --------------------------------------------------------------
-  // BGA detection – we keep the detection but skip all graphics usage
-  // --------------------------------------------------------------
+  // 7. Graphics (BGA)
   serial_log("KERNEL: Scanning PCI for BGA...");
   u32 fb_addr = pci_get_bga_bar0();
-  serial_log_hex("KERNEL: BGA LFB Address: ", fb_addr);
-  // --------------------------------------------------------------
-  // Full GUI and Multitasking System
-  // --------------------------------------------------------------
-  if (fb_addr != 0) {
-    // 5. Init Graphics
-    serial_log("KERNEL: Setting Mode 1024x768x32...");
+
+  if (fb_addr == 0) {
+    serial_log("KERNEL: FATAL - BGA Not Found! Attempting VBE fallback.");
+    // TODO: implement VBE fallback if needed
+  } else {
+    serial_log_hex("KERNEL: BGA LFB Address: ", fb_addr);
+    // Set video mode; currently bga_set_video_mode has no return value
     bga_set_video_mode(1024, 768, 32);
 
-    // Map VRAM
-    serial_log("KERNEL: Mapping VRAM...");
-    // Map enough for 1024x768x32 (~3MB)
-    for (int i = 0; i < 1024; i++) {
+    // Map a larger framebuffer region (e.g., 16 MB) to be safe
+    // Ensure this mapping happens AFTER init_paging()
+    const uint32_t fb_size = 16 * 1024 * 1024; // 16 MB
+    const uint32_t pages = fb_size / 4096;
+    serial_log("KERNEL: Mapping VRAM (16 MB)...");
+    for (uint32_t i = 0; i < pages; i++) {
       paging_map(fb_addr + (i * 4096), fb_addr + (i * 4096), 3);
     }
 
-    // Initialize graphics (allocates backbuffer)
     init_graphics(fb_addr);
+
+    // 8. User Space execution
+    init_multitasking();
 
     serial_log("KERNEL: Starting GUI...");
     gui_init();
-    serial_log("KERNEL: GUI Init complete.");
+    serial_log("KERNEL: GUI Ready.");
 
-    // 7. Enable Multitasking & Schedule User Process
-    serial_log("KERNEL: Enabling Multitasking...");
-    init_multitasking();
-    serial_log("KERNEL: Multitasking Enabled.");
-
+    // Start user space
     create_user_process("INIT.ELF");
-    serial_log("KERNEL: User Process Created.");
-
-    // create_kernel_thread(test_thread); // Disabled - test_thread uses broken
-    // enter_user_mode() serial_log("KERNEL: Kernel Thread Created.");
-
-    serial_log("KERNEL: Enabling Timer...");
-    init_timer(50); // Restore to 50Hz
-    serial_log("KERNEL: Timer Enabled.");
-  } else {
-    serial_log("KERNEL: FATAL - BGA Not Found!");
+    init_timer(50);
+    serial_log("KERNEL: Higher-Half Kernel Running. Idle Loop Active.");
   }
 
-  // --------------------------------------------------------------
-  // Kernel is now stable – hang forever
-  // --------------------------------------------------------------
   while (1) {
+    asm volatile("hlt");
   }
-  return 0; // never reached
 }

@@ -24,6 +24,7 @@ typedef struct tty {
   // Line buffer (for canonical mode)
   char line_buffer[TTY_BUFFER_SIZE];
   int line_len;
+  int line_ready;
 
   // Flags
   uint32_t flags;
