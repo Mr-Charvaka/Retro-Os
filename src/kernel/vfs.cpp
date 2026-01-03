@@ -71,18 +71,20 @@ vfs_node_t *finddir_vfs(vfs_node_t *node, const char *name) {
 }
 
 vfs_node_t *vfs_resolve_path(const char *path) {
+  return vfs_resolve_path_relative(vfs_root, path);
+}
+
+vfs_node_t *vfs_resolve_path_relative(vfs_node_t *root, const char *path) {
   if (!path)
     return 0;
 
-  vfs_node_t *node = vfs_root;
+  vfs_node_t *node = root;
+  if (path[0] == '/') {
+    node = vfs_root;
+  }
+
   int i = 0;
   int len = strlen(path);
-
-  // If relative, we should ideally start from CWD node.
-  // For this OS, we assume single-rooted tree.
-  // We'll handle relative paths by prepending CWD if path[0] != '/'.
-  // But let's keep it simple for now: all paths starting from root or relative
-  // from root.
 
   while (i < len && node) {
     while (i < len && path[i] == '/')

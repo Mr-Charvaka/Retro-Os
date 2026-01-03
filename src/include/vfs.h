@@ -57,10 +57,16 @@ typedef struct vfs_node {
   struct vfs_node *ptr; // For mountpoints
 } vfs_node_t;
 
-struct dirent {
-  char name[128];
-  uint32_t inode;
+// Redundant types removed as they are in types.h
+
+struct iovec {
+  void *iov_base; /* Starting address */
+  size_t iov_len; /* Number of bytes to transfer */
 };
+
+// Redundant struct stat removed as it is in types.h
+
+// Redundant struct dirent removed as it is in types.h
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,6 +85,7 @@ void close_vfs(vfs_node_t *node);
 struct dirent *readdir_vfs(vfs_node_t *node, uint32_t index);
 vfs_node_t *finddir_vfs(vfs_node_t *node, const char *name);
 vfs_node_t *vfs_resolve_path(const char *path);
+vfs_node_t *vfs_resolve_path_relative(vfs_node_t *root, const char *path);
 int mkdir_vfs(vfs_node_t *node, const char *name, uint32_t mask);
 int unlink_vfs(vfs_node_t *node, const char *name);
 int rmdir_vfs(vfs_node_t *node, const char *name);
