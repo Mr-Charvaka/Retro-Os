@@ -1,14 +1,27 @@
+# Build artifacts
 *.o
 *.bin
-*.img
 *.elf
-node_modules/
-.DS_Store
-build/
-bin/
-# Visual Studio Code
-.vscode/
-# Temporary files
-tmp/
-*.tmp
+*.img
+*.map
+
+# Logs
 *.log
+debug.log
+serial*.log
+qemu*.log
+system_check.log
+build_log.txt
+
+# Test files
+test.txt
+
+# Editor/IDE files
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python cache
+__pycache__/
+*.pyc
