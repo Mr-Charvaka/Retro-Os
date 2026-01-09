@@ -7,136 +7,33 @@
 #include "ata.h"
 #include "serial.h"
 
-
 // Forward declaration for DevFS
 extern "C" vfs_node_t *devfs_init();
 static vfs_node_t *devfs_node = 0;
 
 extern "C" {
-static struct dirent *fat16_readdir_vfs(vfs_node_t *node, uint32_t index);
-extern void fat16_get_stats_bytes(uint32_t *total_bytes, uint32_t *free_bytes);
 
 static fat16_bpb_t bpb;
 static uint32_t root_dir_start_sector;
 static uint32_t data_start_sector;
+static uint32_t root_sectors;
 
-void fat16_init() {
-  uint8_t sector[512];
-  ata_read_sector(0, sector); // Read Boot Sector (LBA 0)
-  memcpy(&bpb, sector, sizeof(fat16_bpb_t));
-
-  root_dir_start_sector =
-      bpb.reserved_sectors + (bpb.fats_count * bpb.sectors_per_fat);
-  uint32_t root_dir_sectors = (bpb.root_entries_count * 32 + 511) / 512;
-  data_start_sector = root_dir_start_sector + root_dir_sectors;
-
-  serial_log("FAT16: Initialized.");
-}
-
-void fat16_list_root() {
-  serial_log("FAT16: Listing Root Directory...");
-  uint8_t buffer[512];
-  ata_read_sector(root_dir_start_sector, buffer);
-  fat16_entry_t *entries = (fat16_entry_t *)buffer;
-
-  for (int i = 0; i < 16; i++) {
-    if (entries[i].filename[0] == 0)
-      break;
-    if ((uint8_t)entries[i].filename[0] == 0xE5)
-      continue;
-
-    char name[13];
-    int k = 0;
-    for (int j = 0; j < 8; j++)
-      if (entries[i].filename[j] != ' ')
-        name[k++] = entries[i].filename[j];
-    name[k++] = '.';
-    for (int j = 0; j < 3; j++)
-      if (entries[i].ext[j] != ' ')
-        name[k++] = entries[i].ext[j];
-    name[k] = 0;
-    serial_log(name);
-  }
-}
-
-fat16_entry_t fat16_find_file(const char *filename) {
-  uint8_t buffer[512];
-  uint32_t root_dir_sectors = (bpb.root_entries_count * 32 + 511) / 512;
-
-  serial_log("FAT16: Searching for file:");
-  serial_log(filename);
-
-  for (uint32_t sector = 0; sector < root_dir_sectors; sector++) {
-    ata_read_sector(root_dir_start_sector + sector, buffer);
-    fat16_entry_t *entries = (fat16_entry_t *)buffer;
-
-    for (int i = 0; i < 16; i++) {
-      if ((uint8_t)entries[i].filename[0] == 0) {
-        // End of entries
-        serial_log("FAT16: End of entries reached.");
-        goto not_found;
-      }
-      if ((uint8_t)entries[i].filename[0] == 0xE5) {
-        // Deleted entry
-        continue;
-      }
-      if (entries[i].attributes == 0x0F) {
-        // LFN entry - ignore
-        continue;
-      }
-
-      char name[13];
-      int k = 0;
-      for (int j = 0; j < 8; j++)
-        if (entries[i].filename[j] != ' ')
-          name[k++] = entries[i].filename[j];
-      if (entries[i].ext[0] != ' ') {
-        name[k++] = '.';
-        for (int j = 0; j < 3; j++)
-          if (entries[i].ext[j] != ' ')
-            name[k++] = entries[i].ext[j];
-      }
-      name[k] = 0;
-
-      serial_log("FAT16: Found entry:");
-      serial_log(name);
-
-      if (strcmp(name, filename) == 0) {
-        serial_log("FAT16: Match found!");
-        return entries[i];
-      }
-    }
-  }
-
-not_found:
-  serial_log("FAT16: File not found.");
-  fat16_entry_t empty;
-  memset(&empty, 0, sizeof(fat16_entry_t));
-  return empty;
-}
-
-void fat16_read_file(fat16_entry_t *entry, uint8_t *buffer) {
-  uint32_t cluster = entry->first_cluster_low;
-  uint32_t sector = data_start_sector + (cluster - 2) * bpb.sectors_per_cluster;
-  uint32_t sectors_to_read = (entry->file_size + 511) / 512;
-
-  serial_log_hex("FAT16: Reading file from cluster ", cluster);
-  serial_log_hex("FAT16: Start sector ", sector);
-  serial_log_hex("FAT16: Sectors to read ", sectors_to_read);
-
-  for (uint32_t i = 0; i < sectors_to_read; i++) {
-    ata_read_sector(sector + i, buffer + (i * 512));
-  }
-}
+// Forward Declarations
+static uint32_t fat16_write_vfs(vfs_node_t *node, uint32_t offset,
+                                uint32_t size, uint8_t *buffer);
+static uint32_t fat16_read_vfs(vfs_node_t *node, uint32_t offset, uint32_t size,
+                               uint8_t *buffer);
 
 // ============================================================================
-// FAT16 Write Support
+// Low Level Helpers - Chote mote kaam
 // ============================================================================
 
-// Get FAT start sector
+static uint32_t fat16_cluster_to_sector(uint16_t cluster) {
+  return data_start_sector + (cluster - 2) * bpb.sectors_per_cluster;
+}
+
 static uint32_t fat16_get_fat_sector() { return bpb.reserved_sectors; }
 
-// Read FAT entry for a cluster
 static uint16_t fat16_get_fat_entry(uint16_t cluster) {
   uint32_t fat_offset = cluster * 2;
   uint32_t fat_sector = fat16_get_fat_sector() + (fat_offset / 512);
@@ -147,7 +44,6 @@ static uint16_t fat16_get_fat_entry(uint16_t cluster) {
   return *(uint16_t *)(buffer + entry_offset);
 }
 
-// Set FAT entry for a cluster
 static void fat16_set_fat_entry(uint16_t cluster, uint16_t value) {
   uint32_t fat_offset = cluster * 2;
   uint32_t fat_sector = fat16_get_fat_sector() + (fat_offset / 512);
@@ -158,332 +54,227 @@ static void fat16_set_fat_entry(uint16_t cluster, uint16_t value) {
   *(uint16_t *)(buffer + entry_offset) = value;
   ata_write_sector(fat_sector, buffer);
 
-  // Also update backup FAT if exists
+  // Agar backup FAT hai toh wahan bhi likho
   if (bpb.fats_count > 1) {
     ata_write_sector(fat_sector + bpb.sectors_per_fat, buffer);
   }
 }
 
-// Allocate a free cluster
-uint16_t fat16_alloc_cluster() {
-  // Scan FAT for free cluster (0x0000 means free)
+static uint16_t fat16_alloc_cluster() {
   for (uint16_t cluster = 2; cluster < 0xFFF0; cluster++) {
     if (fat16_get_fat_entry(cluster) == 0x0000) {
-      fat16_set_fat_entry(cluster, 0xFFFF); // Mark as end of chain
+      fat16_set_fat_entry(cluster, 0xFFFF); // Mark as EOF (Kaam ho gaya)
       return cluster;
     }
   }
-  return 0; // No free clusters
+  return 0; // Disk full
 }
 
-// Write data to a file (simple: overwrites from start)
-int fat16_write_file(const char *filename, uint8_t *data, uint32_t size) {
-  fat16_entry_t entry = fat16_find_file(filename);
-  if (entry.filename[0] == 0)
-    return -1; // File not found
+// 8.3 filename ko insaan ke padhne layak banao
+static void fat16_to_name(char *dest, char *src, char *ext) {
+  int k = 0;
+  for (int j = 0; j < 8; j++)
+    if (src[j] != ' ')
+      dest[k++] = src[j];
 
-  uint16_t cluster = entry.first_cluster_low;
-  if (cluster < 2) {
-    // Need to allocate first cluster
-    cluster = fat16_alloc_cluster();
-    if (cluster == 0)
-      return -1;
-    // Update entry's first cluster (needs to update dir entry too - simplified)
+  if (ext[0] != ' ') {
+    dest[k++] = '.';
+    for (int j = 0; j < 3; j++)
+      if (ext[j] != ' ')
+        dest[k++] = ext[j];
   }
-
-  uint32_t sector = data_start_sector + (cluster - 2) * bpb.sectors_per_cluster;
-  uint32_t sectors_to_write = (size + 511) / 512;
-
-  // Write sectors
-  uint8_t buffer[512];
-  for (uint32_t i = 0; i < sectors_to_write; i++) {
-    memset(buffer, 0, 512);
-    uint32_t chunk = (size - i * 512 > 512) ? 512 : (size - i * 512);
-    memcpy(buffer, data + i * 512, chunk);
-    ata_write_sector(sector + i, buffer);
-  }
-
-  // Update file size in directory entry
-  uint8_t dir_buf[512];
-  ata_read_sector(root_dir_start_sector, dir_buf);
-  fat16_entry_t *entries = (fat16_entry_t *)dir_buf;
-
-  for (int i = 0; i < 16; i++) {
-    if (memcmp(entries[i].filename, entry.filename, 8) == 0 &&
-        memcmp(entries[i].ext, entry.ext, 3) == 0) {
-      entries[i].file_size = size;
-      entries[i].first_cluster_low = cluster;
-      ata_write_sector(root_dir_start_sector, dir_buf);
-      break;
-    }
-  }
-
-  return size;
+  dest[k] = 0;
 }
 
-// Create a new file in root directory
-int fat16_create_file(const char *filename) {
-  // Check if file already exists
-  fat16_entry_t existing = fat16_find_file(filename);
-  if (existing.filename[0] != 0)
-    return 0; // Already exists
+// ============================================================================
+// Directory Operations
+// ============================================================================
 
-  // Find free directory entry
+// Iterator callback: 0 return karo aage badhne ke liye, 1 agar mil gaya, -1
+// error
+typedef int (*dir_iterator_t)(fat16_entry_t *entry, uint32_t sector,
+                              uint32_t offset, void *data);
+
+// Generic directory iterator (Root (0) aur Subdirs (cluster) dono ke liye
+// chalta hai)
+static int fat16_iterate_dir(uint16_t dir_cluster, dir_iterator_t callback,
+                             void *data) {
   uint8_t buffer[512];
-  ata_read_sector(root_dir_start_sector, buffer);
-  fat16_entry_t *entries = (fat16_entry_t *)buffer;
 
-  int free_slot = -1;
-  for (int i = 0; i < 16; i++) {
-    if (entries[i].filename[0] == 0 ||
-        (uint8_t)entries[i].filename[0] == 0xE5) {
-      free_slot = i;
-      break;
+  if (dir_cluster == 0) {
+    // Root Directory Iteration
+    // serial_log_hex("FAT16: Iterating ROOT dir at sector ",
+    //                root_dir_start_sector); // Removed for optimization
+    for (uint32_t s = 0; s < root_sectors; s++) {
+      ata_read_sector(root_dir_start_sector + s, buffer);
+      fat16_entry_t *entries = (fat16_entry_t *)buffer;
+      for (int i = 0; i < 16; i++) {
+        if (entries[i].filename[0] != 0 &&
+            (uint8_t)entries[i].filename[0] != 0xE5) {
+          // serial_log("FAT16: Valid Entry found in sector...");
+        }
+        int res = callback(&entries[i], root_dir_start_sector + s,
+                           i * sizeof(fat16_entry_t), data);
+        if (res != 0)
+          return res;
+      }
+    }
+  } else {
+    // Subdirectory Iteration (Cluster Chain)
+    uint16_t cluster = dir_cluster;
+    while (cluster >= 2 && cluster < 0xFFF0) {
+      uint32_t start_sector = fat16_cluster_to_sector(cluster);
+      for (int s = 0; s < bpb.sectors_per_cluster; s++) {
+        ata_read_sector(start_sector + s, buffer);
+        fat16_entry_t *entries = (fat16_entry_t *)buffer;
+        for (int i = 0; i < 16; i++) {
+          int res = callback(&entries[i], start_sector + s,
+                             i * sizeof(fat16_entry_t), data);
+          if (res != 0)
+            return res;
+        }
+      }
+      cluster = fat16_get_fat_entry(cluster);
     }
   }
+  return 0;
+}
 
-  if (free_slot < 0)
-    return -1; // No free slots
+struct find_ctx {
+  const char *name;
+  fat16_entry_t result;
+  bool found;
+  uint32_t sector; // Location of found entry
+  uint32_t offset;
+};
 
-  // Parse filename (e.g., "TEST.TXT" -> "TEST    " + "TXT")
-  memset(&entries[free_slot], 0, sizeof(fat16_entry_t));
-  memset(entries[free_slot].filename, ' ', 8);
-  memset(entries[free_slot].ext, ' ', 3);
+static int find_callback(fat16_entry_t *entry, uint32_t sector, uint32_t offset,
+                         void *d_ptr) {
+  find_ctx *ctx = (find_ctx *)d_ptr;
 
-  int fi = 0, ei = 0;
-  int in_ext = 0;
-  for (int i = 0; filename[i] && fi < 8; i++) {
-    if (filename[i] == '.') {
+  if (entry->filename[0] == 0)
+    return 1; // Directory khatam
+  if ((uint8_t)entry->filename[0] == 0xE5)
+    return 0; // Deleted hai ye
+  if (entry->attributes == ATTR_LFN)
+    return 0; // Skip LFN
+
+  char name[13];
+  fat16_to_name(name, entry->filename, entry->ext);
+
+  /*serial_log("FAT16 Check: '");
+  serial_log(name);
+  serial_log("' vs '");
+  serial_log(ctx->name);
+  serial_log("'\n");*/
+
+  // Case-insensitive comparison
+  bool match = true;
+  for (int i = 0;; i++) {
+    char c1 = name[i];
+    char c2 = ctx->name[i];
+    if (c1 >= 'a' && c1 <= 'z')
+      c1 -= 32;
+    if (c2 >= 'a' && c2 <= 'z')
+      c2 -= 32;
+    if (c1 != c2) {
+      match = false;
+      break;
+    }
+    if (c1 == 0)
+      break;
+  }
+
+  if (match) {
+    ctx->result = *entry;
+    ctx->found = true;
+    ctx->sector = sector;
+    ctx->offset = offset;
+    return 1; // Stop
+  }
+  return 0;
+}
+
+static bool fat16_find_entry(uint16_t dir_cluster, const char *name,
+                             fat16_entry_t *out) {
+  find_ctx ctx;
+  ctx.name = name;
+  ctx.found = false;
+  fat16_iterate_dir(dir_cluster, find_callback, &ctx);
+  if (ctx.found && out)
+    *out = ctx.result;
+  return ctx.found;
+}
+
+struct create_ctx {
+  uint32_t free_sector;
+  uint32_t free_offset;
+  bool slot_found;
+};
+
+static int find_free_callback(fat16_entry_t *entry, uint32_t sector,
+                              uint32_t offset, void *d_ptr) {
+  create_ctx *ctx = (create_ctx *)d_ptr;
+  if (entry->filename[0] == 0 || (uint8_t)entry->filename[0] == 0xE5) {
+    ctx->free_sector = sector;
+    ctx->free_offset = offset;
+    ctx->slot_found = true;
+    return 1; // Found slot
+  }
+  return 0;
+}
+
+static int fat16_add_entry(uint16_t dir_cluster, const char *name, uint8_t attr,
+                           uint16_t cluster) {
+  // Check existence
+  if (fat16_find_entry(dir_cluster, name, 0))
+    return -1; // Exists
+
+  create_ctx ctx;
+  ctx.slot_found = false;
+  fat16_iterate_dir(dir_cluster, find_free_callback, &ctx);
+
+  if (!ctx.slot_found) {
+    // TODO: Directory ko badhana padega agar root nahi hai
+    return -2; // Jagah nahi hai
+  }
+
+  // Parse Name
+  fat16_entry_t entry;
+  memset(&entry, 0, sizeof(fat16_entry_t));
+  memset(entry.filename, ' ', 8);
+  memset(entry.ext, ' ', 3);
+
+  int fi = 0, in_ext = 0, ei = 0;
+  for (int i = 0; name[i]; i++) {
+    char ch = name[i];
+    if (ch >= 'a' && ch <= 'z')
+      ch -= 32;
+
+    if (ch == '.') {
       in_ext = 1;
       ei = 0;
-    } else if (in_ext && ei < 3) {
-      entries[free_slot].ext[ei++] = filename[i];
-    } else if (!in_ext && fi < 8) {
-      entries[free_slot].filename[fi++] = filename[i];
+      continue;
+    }
+    if (in_ext) {
+      if (ei < 3)
+        entry.ext[ei++] = ch;
+    } else {
+      if (fi < 8)
+        entry.filename[fi++] = ch;
     }
   }
 
-  entries[free_slot].attributes = 0x20; // Archive
-  entries[free_slot].file_size = 0;
-  entries[free_slot].first_cluster_low = 0;
+  entry.attributes = attr;
+  entry.first_cluster_low = cluster;
+  entry.file_size = 0; // 0 for now
 
-  return 0;
-}
-
-// Delete a file
-int fat16_delete_file(const char *filename) {
-  fat16_entry_t entry = fat16_find_file(filename);
-  if (entry.filename[0] == 0)
-    return -1;
-
-  // Free cluster chain
-  uint16_t cluster = entry.first_cluster_low;
-  while (cluster >= 2 && cluster < 0xFFF0) {
-    uint16_t next = fat16_get_fat_entry(cluster);
-    fat16_set_fat_entry(cluster, 0x0000);
-    cluster = next;
-  }
-
-  // Mark directory entry as deleted
+  // Write Entry
   uint8_t buffer[512];
-  ata_read_sector(root_dir_start_sector, buffer);
-  fat16_entry_t *entries = (fat16_entry_t *)buffer;
+  ata_read_sector(ctx.free_sector, buffer);
+  memcpy(buffer + ctx.free_offset, &entry, sizeof(fat16_entry_t));
+  ata_write_sector(ctx.free_sector, buffer);
 
-  for (int i = 0; i < 16; i++) {
-    if (memcmp(entries[i].filename, entry.filename, 8) == 0 &&
-        memcmp(entries[i].ext, entry.ext, 3) == 0) {
-      entries[i].filename[0] = 0xE5; // Mark as deleted
-      ata_write_sector(root_dir_start_sector, buffer);
-      break;
-    }
-  }
-
-  return 0;
-}
-
-static int fat16_unlink_vfs(vfs_node_t *node, const char *name) {
-  (void)node;
-  return fat16_delete_file(name);
-}
-
-// Simple mkdir (creates directory entry with ATTR_DIRECTORY)
-int fat16_mkdir(const char *name) {
-  // Check if already exists
-  fat16_entry_t existing = fat16_find_file(name);
-  if (existing.filename[0] != 0)
-    return -1;
-
-  // Find free directory entry
-  uint8_t buffer[512];
-  ata_read_sector(root_dir_start_sector, buffer);
-  fat16_entry_t *entries = (fat16_entry_t *)buffer;
-
-  int free_slot = -1;
-  for (int i = 0; i < 16; i++) {
-    if (entries[i].filename[0] == 0 ||
-        (uint8_t)entries[i].filename[0] == 0xE5) {
-      free_slot = i;
-      break;
-    }
-  }
-
-  if (free_slot < 0)
-    return -1;
-
-  memset(&entries[free_slot], 0, sizeof(fat16_entry_t));
-  memset(entries[free_slot].filename, ' ', 8);
-  memset(entries[free_slot].ext, ' ', 3);
-
-  int fi = 0;
-  for (int i = 0; name[i] && fi < 8; i++) {
-    entries[free_slot].filename[fi++] = name[i];
-  }
-
-  entries[free_slot].attributes = 0x10; // ATTR_DIRECTORY
-  entries[free_slot].file_size = 0;
-
-  // Allocate a cluster for the directory
-  uint16_t cluster = fat16_alloc_cluster();
-  if (cluster == 0)
-    return -1;
-  entries[free_slot].first_cluster_low = cluster;
-
-  // Clear the cluster
-  uint8_t zero[512];
-  memset(zero, 0, 512);
-  uint32_t sector = data_start_sector + (cluster - 2) * bpb.sectors_per_cluster;
-  for (int i = 0; i < bpb.sectors_per_cluster; i++) {
-    ata_write_sector(sector + i, zero);
-  }
-
-  ata_write_sector(root_dir_start_sector, buffer);
-  return 0;
-}
-
-static int fat16_mkdir_vfs(vfs_node_t *node, const char *name, uint32_t mask) {
-  (void)node;
-  (void)mask;
-  return fat16_mkdir(name);
-}
-
-// VFS write wrapper
-static uint32_t fat16_write_vfs(vfs_node_t *node, uint32_t offset,
-                                uint32_t size, uint8_t *buffer) {
-  (void)offset; // For now, always write from start
-  int result = fat16_write_file(node->name, buffer, size);
-  if (result < 0)
-    return 0;
-  node->length = size;
-  return size;
-}
-
-// VFS wrappers
-static uint32_t fat16_read_vfs(vfs_node_t *node, uint32_t offset, uint32_t size,
-                               uint8_t *buffer) {
-  fat16_entry_t entry = fat16_find_file(node->name);
-  if (entry.filename[0] == 0)
-    return 0;
-
-  if (offset >= entry.file_size)
-    return 0;
-  if (offset + size > entry.file_size)
-    size = entry.file_size - offset;
-
-  // Allocate sector-aligned buffer for DMA/PIO reading
-  uint32_t aligned_size = (entry.file_size + 511) & ~511;
-  uint8_t *tmp = (uint8_t *)kmalloc(aligned_size);
-  if (!tmp)
-    return 0;
-
-  fat16_read_file(&entry, tmp);
-  memcpy(buffer, tmp + offset, size);
-  kfree(tmp);
-  return size;
-}
-
-static vfs_node_t *fat16_finddir_vfs(vfs_node_t *node, const char *name) {
-  (void)node;
-
-  // Check for DevFS mount point
-  if (strcmp(name, "dev") == 0) {
-    if (!devfs_node)
-      devfs_node = devfs_init();
-    return devfs_node;
-  }
-
-  fat16_entry_t entry = fat16_find_file(name);
-  if (entry.filename[0] == 0)
-    return 0;
-
-  vfs_node_t *res = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
-  memset(res, 0, sizeof(vfs_node_t));
-  strcpy(res->name, name);
-  res->length = entry.file_size;
-  res->read = fat16_read_vfs;
-  res->write = fat16_write_vfs;
-  res->readdir = fat16_readdir_vfs;
-  res->finddir = fat16_finddir_vfs; // Support subdirectories
-  res->unlink = fat16_unlink_vfs;
-  res->mkdir = fat16_mkdir_vfs;
-
-  if (entry.attributes & 0x10) { // ATTR_DIRECTORY
-    res->flags = VFS_DIRECTORY;
-  } else {
-    res->flags = VFS_FILE;
-  }
-
-  res->ref_count = 1;
-  return res;
-}
-
-static struct dirent *fat16_readdir_vfs(vfs_node_t *node, uint32_t index) {
-  uint32_t root_sectors = (bpb.root_entries_count * 32 + 511) / 512;
-  uint8_t buffer[512];
-  uint32_t count = 0;
-
-  for (uint32_t s = 0; s < root_sectors; s++) {
-    ata_read_sector(root_dir_start_sector + s, buffer);
-    fat16_entry_t *entries = (fat16_entry_t *)buffer;
-
-    for (int i = 0; i < 16; i++) {
-      if (entries[i].filename[0] == 0)
-        return 0;
-      if ((uint8_t)entries[i].filename[0] == 0xE5)
-        continue;
-      if (entries[i].attributes & 0x08) // ATTR_VOLUME_ID
-        continue;
-
-      if (count == index) {
-        static struct dirent d;
-        // Clear previous data
-        memset(d.d_name, 0, 256);
-        d.d_ino = 0;
-
-        int k = 0;
-        for (int j = 0; j < 8; j++)
-          if (entries[i].filename[j] != ' ')
-            d.d_name[k++] = entries[i].filename[j];
-
-        if (entries[i].ext[0] != ' ') {
-          d.d_name[k++] = '.';
-          for (int j = 0; j < 3; j++)
-            if (entries[i].ext[j] != ' ')
-              d.d_name[k++] = entries[i].ext[j];
-        }
-        d.d_name[k] = 0;
-        d.d_ino = entries[i].first_cluster_low;
-        d.d_off = index;
-        d.d_reclen = sizeof(struct dirent);
-        if (entries[i].attributes & 0x10)
-          d.d_type = DT_DIR;
-        else
-          d.d_type = DT_REG;
-
-        return &d;
-      }
-      count++;
-    }
-  }
   return 0;
 }
 
@@ -499,20 +290,412 @@ void fat16_get_stats_bytes(uint32_t *total_bytes, uint32_t *free_bytes) {
   }
 }
 
+// ============================================================================
+// Public API Impl
+// ============================================================================
+
+void fat16_init() {
+  uint8_t sector[512];
+  ata_read_sector(0, sector);
+  memcpy(&bpb, sector, sizeof(fat16_bpb_t));
+
+  root_dir_start_sector =
+      bpb.reserved_sectors + (bpb.fats_count * bpb.sectors_per_fat);
+  root_sectors = (bpb.root_entries_count * 32 + 511) / 512;
+  data_start_sector = root_dir_start_sector + root_sectors;
+
+  serial_log("FAT16: Subdir support ke saath initialize ho gaya.");
+}
+
+fat16_entry_t fat16_find_file(const char *filename) {
+  fat16_entry_t out;
+  if (fat16_find_entry(0, filename, &out))
+    return out;
+  memset(&out, 0, sizeof(out));
+  return out;
+}
+
+void fat16_read_file(fat16_entry_t *entry, uint8_t *buffer) {
+  uint16_t cluster = entry->first_cluster_low;
+  uint32_t size = entry->file_size;
+  uint32_t bytes_read = 0;
+
+  while (cluster >= 2 && cluster < 0xFFF0 && bytes_read < size) {
+    uint32_t sector = fat16_cluster_to_sector(cluster);
+    for (int i = 0; i < bpb.sectors_per_cluster; i++) {
+      ata_read_sector(sector + i, buffer + bytes_read);
+      bytes_read += 512;
+      if (bytes_read >= size)
+        break;
+    }
+    cluster = fat16_get_fat_entry(cluster);
+  }
+}
+
+int fat16_write_file(const char *filename, uint8_t *data, uint32_t size) {
+  // Legacy wrapper: Seedha root mein likho
+  fat16_entry_t entry;
+  if (!fat16_find_entry(0, filename, &entry))
+    return -1;
+
+  // Create a temporary VFS node to reuse write_vfs logic
+  vfs_node_t temp_node;
+  memset(&temp_node, 0, sizeof(vfs_node_t));
+  strcpy(temp_node.name, filename);
+  temp_node.impl = (void *)(uintptr_t)entry.first_cluster_low;
+  temp_node.size = entry.file_size;
+
+  // Reuse the logic in write_vfs
+  uint32_t written = fat16_write_vfs(&temp_node, 0, size, data);
+
+  // Update directory entry size if changed
+  if (written > 0) {
+    // Key parameters phir se dhundo directory entry update karne ke liye
+    // ... Legacy root write ke liye ye aasaan hai:
+    find_ctx ctx;
+    ctx.name = filename;
+    ctx.found = false;
+    fat16_iterate_dir(0, find_callback, &ctx);
+    if (ctx.found) {
+      uint8_t buffer[512];
+      ata_read_sector(ctx.sector, buffer);
+      fat16_entry_t *e = (fat16_entry_t *)(buffer + ctx.offset);
+      e->file_size = size; // Update size
+      e->first_cluster_low =
+          (uint16_t)(uintptr_t)
+              temp_node.impl; // Update start cluster (if allocated)
+      ata_write_sector(ctx.sector, buffer);
+    }
+  }
+  return written;
+}
+
+int fat16_create_file(const char *filename) {
+  return fat16_add_entry(0, filename, ATTR_ARCHIVE, 0);
+}
+
+int fat16_mkdir(const char *name) {
+  uint16_t cluster = fat16_alloc_cluster();
+  if (cluster == 0)
+    return -1;
+
+  // Clear cluster
+  uint8_t buffer[512];
+  memset(buffer, 0, 512);
+  uint32_t sector = fat16_cluster_to_sector(cluster);
+  for (int i = 0; i < bpb.sectors_per_cluster; i++)
+    ata_write_sector(sector + i, buffer);
+
+  // Add entry to ROOT
+  return fat16_add_entry(0, name, ATTR_DIRECTORY, cluster);
+}
+
+int fat16_delete_file(const char *name) {
+  find_ctx ctx;
+  ctx.name = name;
+  ctx.found = false;
+
+  // Only supports root delete for legacy API
+  fat16_iterate_dir(0, find_callback, &ctx);
+
+  if (ctx.found) {
+    // Free Chain
+    uint16_t cluster = ctx.result.first_cluster_low;
+    while (cluster >= 2 && cluster < 0xFFF0) {
+      uint16_t next = fat16_get_fat_entry(cluster);
+      fat16_set_fat_entry(cluster, 0);
+      cluster = next;
+    }
+
+    // Mark Deleted
+    uint8_t buffer[512];
+    ata_read_sector(ctx.sector, buffer);
+    buffer[ctx.offset] = 0xE5;
+    ata_write_sector(ctx.sector, buffer);
+    return 0;
+  }
+  return -1;
+}
+
+// ============================================================================
+// VFS Bindings
+// ============================================================================
+
+static struct dirent *fat16_readdir_vfs(vfs_node_t *node, uint32_t index);
+static vfs_node_t *fat16_finddir_vfs(vfs_node_t *node, const char *name);
+static int fat16_mkdir_vfs(vfs_node_t *node, const char *name, uint32_t mask);
+static int fat16_unlink_vfs(vfs_node_t *node, const char *name);
+static int fat16_rename_vfs(vfs_node_t *node, const char *old_name,
+                            const char *new_name);
+static int fat16_create_vfs(vfs_node_t *node, const char *name, int permission);
+
+static uint32_t fat16_write_vfs(vfs_node_t *node, uint32_t offset,
+                                uint32_t size, uint8_t *buffer) {
+  // Update file size logic simplified
+  fat16_entry_t entry;
+  if (!fat16_find_entry(0, node->name, &entry)) {
+    // node->impl should suffice for writing content
+  }
+
+  uint16_t cluster = (uint16_t)(uintptr_t)node->impl;
+  if (cluster == 0) {
+    // Need to allocate first cluster!
+    cluster = fat16_alloc_cluster();
+    if (cluster == 0)
+      return 0;
+    node->impl = (void *)(uintptr_t)cluster;
+
+    // TODO: Directory entry update logic is missing parent context in VFS phase
+    // 1
+  }
+
+  uint32_t bytes_written = 0;
+  // Naive loop
+  while (cluster >= 2 && bytes_written < size) {
+    uint32_t sector = fat16_cluster_to_sector(cluster);
+    for (int i = 0; i < bpb.sectors_per_cluster && bytes_written < size; i++) {
+      uint8_t sec_buf[512];
+      uint32_t chunk =
+          (size - bytes_written) > 512 ? 512 : (size - bytes_written);
+
+      if (chunk < 512)
+        ata_read_sector(sector + i, sec_buf);
+
+      memcpy(sec_buf, buffer + bytes_written, chunk);
+      ata_write_sector(sector + i, sec_buf);
+      bytes_written += chunk;
+      if (bytes_written % (64 * 1024) == 0) {
+        serial_log("FAT16: Write Progress...");
+      }
+    }
+
+    if (bytes_written < size) {
+      uint16_t next = fat16_get_fat_entry(cluster);
+      if (next >= 0xFFF0 || next == 0) {
+        uint16_t new_c = fat16_alloc_cluster();
+        if (!new_c)
+          break;
+        fat16_set_fat_entry(cluster, new_c);
+        cluster = new_c;
+      } else {
+        cluster = next;
+      }
+    }
+  }
+  return bytes_written;
+}
+
+static uint32_t fat16_read_vfs(vfs_node_t *node, uint32_t offset, uint32_t size,
+                               uint8_t *buffer) {
+  fat16_entry_t entry;
+  entry.first_cluster_low = (uint16_t)(uintptr_t)node->impl;
+  entry.file_size = node->size;
+
+  // Full read temp buffer strategy
+  uint8_t *tmp = (uint8_t *)kmalloc((entry.file_size + 511) & ~511);
+  if (!tmp)
+    return 0;
+
+  fat16_read_file(&entry, tmp);
+
+  if (offset > entry.file_size) {
+    kfree(tmp);
+    return 0;
+  }
+  if (offset + size > entry.file_size)
+    size = entry.file_size - offset;
+
+  memcpy(buffer, tmp + offset, size);
+  kfree(tmp);
+  return size;
+}
+
+static vfs_node_t *fat16_finddir_vfs(vfs_node_t *node, const char *name) {
+  if (strcmp(name, "dev") == 0 && node->impl == 0) {
+    if (!devfs_node)
+      devfs_node = devfs_init();
+    return devfs_node;
+  }
+
+  fat16_entry_t entry;
+  if (fat16_find_entry((uint16_t)(uintptr_t)node->impl, name, &entry)) {
+    vfs_node_t *res = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
+    memset(res, 0, sizeof(vfs_node_t));
+    strcpy(res->name, name);
+    res->size = entry.file_size;
+    res->impl = (void *)(uintptr_t)entry.first_cluster_low;
+    res->read = fat16_read_vfs;
+    res->write = fat16_write_vfs;
+    res->readdir = fat16_readdir_vfs;
+    res->finddir = fat16_finddir_vfs;
+    res->mkdir = fat16_mkdir_vfs;
+    res->unlink = fat16_unlink_vfs;
+    res->rename = fat16_rename_vfs;
+    res->create = fat16_create_vfs;
+
+    if (entry.attributes & ATTR_DIRECTORY) {
+      res->flags = VFS_DIRECTORY;
+    } else {
+      res->flags = VFS_FILE;
+    }
+    return res;
+  }
+  return 0;
+}
+
+// Readdir Context State
+struct readdir_ctx {
+  uint32_t target_index;
+  uint32_t current_index;
+  fat16_entry_t *found_entry;
+};
+
+static int readdir_callback(fat16_entry_t *entry, uint32_t sector,
+                            uint32_t offset, void *d_ptr) {
+  readdir_ctx *ctx = (readdir_ctx *)d_ptr;
+
+  if (entry->filename[0] == 0)
+    return 1;
+  if ((uint8_t)entry->filename[0] == 0xE5)
+    return 0;
+  if (entry->attributes & ATTR_VOLUME_ID)
+    return 0;
+
+  if (ctx->current_index == ctx->target_index) {
+    ctx->found_entry = entry;
+    return 1;
+  }
+  ctx->current_index++;
+  return 0;
+}
+
+static struct dirent *fat16_readdir_vfs(vfs_node_t *node, uint32_t index) {
+  static struct dirent d;
+  static fat16_entry_t entry_copy;
+
+  readdir_ctx ctx;
+  ctx.target_index = index;
+  ctx.current_index = 0;
+  ctx.found_entry = 0;
+
+  fat16_iterate_dir((uint16_t)(uintptr_t)node->impl, readdir_callback, &ctx);
+
+  if (ctx.found_entry) {
+    entry_copy = *ctx.found_entry;
+    memset(&d, 0, sizeof(struct dirent));
+    fat16_to_name(d.d_name, entry_copy.filename, entry_copy.ext);
+    d.d_ino = entry_copy.first_cluster_low;
+
+    if (entry_copy.attributes & ATTR_DIRECTORY)
+      d.d_type = DT_DIR;
+    else
+      d.d_type = DT_REG;
+
+    return &d;
+  }
+  return 0;
+}
+
+static int fat16_mkdir_vfs(vfs_node_t *node, const char *name, uint32_t mask) {
+  uint16_t cluster = fat16_alloc_cluster();
+  if (cluster == 0)
+    return -1;
+
+  uint8_t buffer[512];
+  memset(buffer, 0, 512);
+  uint32_t sector = fat16_cluster_to_sector(cluster);
+  for (int i = 0; i < bpb.sectors_per_cluster; i++)
+    ata_write_sector(sector + i, buffer);
+
+  return fat16_add_entry((uint16_t)(uintptr_t)node->impl, name, ATTR_DIRECTORY,
+                         cluster);
+}
+
+static int fat16_unlink_vfs(vfs_node_t *node, const char *name) {
+  if (node->impl == 0)
+    return fat16_delete_file(name);
+  return -1;
+}
+
+static int fat16_rename_vfs(vfs_node_t *node, const char *old_name,
+                            const char *new_name) {
+  find_ctx ctx;
+  ctx.name = old_name;
+  ctx.found = false;
+  fat16_iterate_dir((uint16_t)(uintptr_t)node->impl, find_callback, &ctx);
+
+  if (!ctx.found)
+    return -1;
+
+  // New name parse
+  char filename[9];
+  char ext[4];
+  memset(filename, ' ', 8);
+  memset(ext, ' ', 3);
+  filename[8] = 0;
+  ext[3] = 0;
+
+  int fi = 0, in_ext = 0, ei = 0;
+  for (int i = 0; new_name[i]; i++) {
+    char ch = new_name[i];
+    if (ch >= 'a' && ch <= 'z')
+      ch -= 32; // Uppercase for FAT
+
+    if (ch == '.') {
+      in_ext = 1;
+      ei = 0;
+      continue;
+    }
+    if (in_ext) {
+      if (ei < 3)
+        ext[ei++] = ch;
+    } else {
+      if (fi < 8)
+        filename[fi++] = ch;
+    }
+  }
+
+  serial_log("FAT16: Updating entry to name=");
+  serial_log(filename);
+  serial_log(" ext=");
+  serial_log(ext);
+
+  uint8_t buffer[512];
+  ata_read_sector(ctx.sector, buffer);
+  fat16_entry_t *entry = (fat16_entry_t *)(buffer + ctx.offset);
+  memcpy(entry->filename, filename, 8);
+  memcpy(entry->ext, ext, 3);
+  ata_write_sector(ctx.sector, buffer);
+
+  return 0;
+}
+
+static int fat16_create_vfs(vfs_node_t *node, const char *name,
+                            int permission) {
+  return fat16_add_entry((uint16_t)(uintptr_t)node->impl, name, ATTR_ARCHIVE,
+                         0);
+}
+
 vfs_node_t *fat16_vfs_init() {
   vfs_node_t *root = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
   memset(root, 0, sizeof(vfs_node_t));
   strcpy(root->name, "/");
   root->flags = VFS_DIRECTORY;
+  root->impl = 0; // ROOT CLUSTER
+
   root->readdir = fat16_readdir_vfs;
   root->finddir = fat16_finddir_vfs;
-  root->ref_count = 0xFFFFFFFF; // Static root
+  root->read = fat16_read_vfs;
+  root->write = fat16_write_vfs;
+  root->mkdir = fat16_mkdir_vfs;
+  root->unlink = fat16_unlink_vfs;
+  root->rename = fat16_rename_vfs;
+  root->create = fat16_create_vfs;
 
   // Initialize and mount DevFS
   devfs_node = devfs_init();
-  devfs_node->ptr = root;
+  devfs_node->impl = root;
 
   return root;
 }
-
-} // extern "C"
+}

@@ -26,11 +26,16 @@ static void timer_callback(registers_t *regs) {
   schedule();
 }
 
+#include "../kernel/apic.h"
+
 void init_timer(uint32_t frequency) {
   // Register timer handler
   register_interrupt_handler(32, timer_callback); // IRQ0 = IDT 32
   register_interrupt_handler(34,
                              timer_callback); // IRQ0 -> GSI 2 Override (IDT 34)
+
+  // Unmask IRQ0
+  ioapic_set_mask(0, false);
 
   // The value we send to the PIT is the value to divide it's input clock
   // (1193180 Hz) by, to get our required frequency.

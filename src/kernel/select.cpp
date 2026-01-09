@@ -10,7 +10,6 @@
 #include "../include/vfs.h"
 #include "process.h"
 
-
 extern "C" {
 
 extern uint32_t tick;
@@ -22,7 +21,7 @@ extern uint32_t tick;
 static int fd_is_readable(int fd) {
   if (!current_process || fd < 0 || fd >= MAX_PROCESS_FILES)
     return 0;
-  vfs_node_t *node = current_process->fd_table[fd];
+  vfs_node_t *node = current_process->fd_table[fd]->node;
   if (!node)
     return 0;
 
@@ -35,7 +34,7 @@ static int fd_is_readable(int fd) {
 static int fd_is_writable(int fd) {
   if (!current_process || fd < 0 || fd >= MAX_PROCESS_FILES)
     return 0;
-  vfs_node_t *node = current_process->fd_table[fd];
+  vfs_node_t *node = current_process->fd_table[fd]->node;
   if (!node)
     return 0;
 

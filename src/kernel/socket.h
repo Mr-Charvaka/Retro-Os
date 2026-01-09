@@ -63,6 +63,8 @@ int sys_getsockopt(int sockfd, int level, int optname, void *optval,
                    uint32_t *optlen);
 int sys_shutdown(int sockfd, int how);
 int sys_socketpair(int domain, int type, int protocol, int sv[2]);
+int socket_can_accept(int sockfd);
+int socket_can_read(int sockfd);
 
 // VFS interface for socket FDs
 uint32_t socket_read(vfs_node_t *node, uint32_t offset, uint32_t size,

@@ -1,5 +1,19 @@
 #pragma once
 
+#include <Std/Types.h>
+
+extern "C" void *kmalloc(size_t);
+extern "C" void kfree(void *);
+
+void *operator new(size_t size);
+void *operator new[](size_t size);
+inline void *operator new(size_t, void *ptr) { return ptr; }
+inline void *operator new[](size_t, void *ptr) { return ptr; }
+void operator delete(void *ptr) noexcept;
+void operator delete[](void *ptr) noexcept;
+void operator delete(void *ptr, size_t) noexcept;
+void operator delete[](void *ptr, size_t) noexcept;
+
 namespace Std {
 
 template <typename T> struct RemoveReference {

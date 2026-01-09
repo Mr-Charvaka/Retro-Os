@@ -4,7 +4,6 @@
 #include <Std/Forward.h>
 #include <Std/Types.h>
 
-
 extern "C" {
 void *kmalloc(size_t);
 }
@@ -42,6 +41,11 @@ public:
   }
 
   size_t size() const { return m_size; }
+
+  T *begin() { return m_data; }
+  const T *begin() const { return m_data; }
+  T *end() { return m_data + m_size; }
+  const T *end() const { return m_data + m_size; }
 
 private:
   void ensure_capacity(size_t new_capacity) {

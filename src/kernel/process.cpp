@@ -7,28 +7,32 @@
 #include "elf_loader.h"
 #include "gdt.h"
 #include "heap.h"
+#include "net.h"
 #include "paging.h"
 #include "pmm.h"
+#include "shm.h"
 #include "vm.h"
 
 process_t *current_process = 0;
 process_t *ready_queue = 0;
 uint32_t next_pid = 1;
 
-extern "C" uint32_t stack_top; // From kernel_entry.asm
+extern "C" uint32_t
+    stack_top; // Asli stack ki choti (kernel_entry.asm se aayi hai)
 extern "C" void switch_task(uint32_t *old_esp, uint32_t new_esp,
                             uint32_t new_cr3);
 extern "C" void fork_child_return();
 
 void init_multitasking() {
-  serial_log("SCHED: Initializing Higher-Half Scheduler...");
+  serial_log("SCHED: Multitasking shuru kar rahe hain...");
 
   current_process = (process_t *)kmalloc(sizeof(process_t));
   current_process->id = 0;
   current_process->state = PROCESS_RUNNING;
   current_process->parent = 0;
   current_process->exit_code = 0;
-  current_process->page_directory = (uint32_t *)VIRT_TO_PHYS(kernel_directory);
+  current_process->page_directory =
+      (uint32_t *)VIRT_TO_PHYS(kernel_directory); // Directory set ho gayi
   current_process->kernel_stack_top = (uint32_t)&stack_top;
 
   for (int i = 0; i < MAX_PROCESS_FILES; i++)
@@ -48,6 +52,7 @@ void init_multitasking() {
 }
 
 void create_kernel_thread(void (*fn)()) {
+  // Naya kernel thread banao
   process_t *new_proc = (process_t *)kmalloc(sizeof(process_t));
   new_proc->id = next_pid++;
   new_proc->state = PROCESS_READY;
@@ -102,23 +107,40 @@ void user_mode_entry(uint32_t entry, uint32_t utop) {
                : "eax");
 }
 
-void create_user_process(const char *filename) {
+extern "C" void create_user_process(const char *filename, char *const argv[]) {
+  // Disable interrupts during process creation to prevent race conditions
+  uint32_t eflags;
+  asm volatile("pushf; pop %0; cli" : "=r"(eflags));
+
+  // User process load karne ka jugad
   uint32_t phys_pd = (uint32_t)pd_create();
-  if (!phys_pd)
+  if (!phys_pd) {
+    // Restore interrupts
+    if (eflags & 0x200)
+      asm volatile("sti");
     return;
+  }
 
   uint32_t phys_old_pd;
   asm volatile("mov %%cr3, %0" : "=r"(phys_old_pd));
 
+  uint32_t *old_pd_ptr = current_process->page_directory;
+  current_process->page_directory = (uint32_t *)phys_pd;
   pd_switch((uint32_t *)phys_pd);
 
   uint32_t top_addr = 0;
   uint32_t entry = load_elf(filename, &top_addr);
 
+  // Restore parent PD in current process struct
+  current_process->page_directory = old_pd_ptr;
   pd_switch((uint32_t *)phys_old_pd);
 
   if (entry == 0) {
     serial_log("PROC ERROR: Failed to load ELF");
+    pd_destroy((uint32_t *)phys_pd); // Clean up new PD
+    // Restore interrupts
+    if (eflags & 0x200)
+      asm volatile("sti");
     return;
   }
 
@@ -136,13 +158,20 @@ void create_user_process(const char *filename) {
   for (int i = 0; i < MAX_PROCESS_FILES; i++)
     new_proc->fd_table[i] = 0;
 
-  vfs_node_t *tty = finddir_vfs(vfs_dev, "tty");
+  vfs_node_t *tty = vfs_resolve_path("/dev/tty");
   if (tty) {
-    new_proc->fd_table[0] = tty;
-    new_proc->fd_table[1] = tty;
-    new_proc->fd_table[2] = tty;
+    for (int i = 0; i < 3; i++) {
+      file_description_t *desc =
+          (file_description_t *)kmalloc(sizeof(file_description_t));
+      desc->node = tty;
+      desc->offset = 0;
+      desc->flags = O_RDWR;
+      desc->ref_count = 1;
+      new_proc->fd_table[i] = desc;
+    }
   }
 
+  // CWD inherit karo agar parent hai
   if (current_process)
     strcpy(new_proc->cwd, current_process->cwd);
   else
@@ -168,6 +197,54 @@ void create_user_process(const char *filename) {
   new_proc->entry_point = entry;
   new_proc->user_stack_top = user_stack_virt + 4096;
 
+  // Copy argv to stack
+  uint32_t *old_stack_pd = current_process->page_directory;
+  current_process->page_directory = (uint32_t *)phys_pd;
+  pd_switch((uint32_t *)phys_pd);
+
+  uint32_t *ustack = (uint32_t *)new_proc->user_stack_top;
+  // ... (argc/argv copy logic)
+  int argc = 0;
+  if (argv) {
+    while (argv[argc])
+      argc++;
+  }
+
+  // Copy strings first
+  uint32_t arg_ptrs[16]; // Max 16 args
+  if (argc > 16)
+    argc = 16;
+
+  for (int i = argc - 1; i >= 0; i--) {
+    int len = strlen(argv[i]) + 1;
+    ustack = (uint32_t *)((uint32_t)ustack - len);
+    memcpy(ustack, argv[i], len);
+    arg_ptrs[i] = (uint32_t)ustack;
+  }
+
+  // Align stack
+  ustack = (uint32_t *)((uint32_t)ustack & ~3);
+
+  // Pointers to strings (argv array)
+  ustack -= (argc + 1);
+  uint32_t argv_base = (uint32_t)ustack;
+  for (int i = 0; i < argc; i++) {
+    ustack[i] = arg_ptrs[i];
+  }
+  ustack[argc] = 0; // null terminator
+
+  // argc, argv
+  ustack -= 1;
+  *ustack = argv_base;
+  ustack -= 1;
+  *ustack = (uint32_t)argc;
+
+  new_proc->user_stack_top = (uint32_t)ustack;
+
+  // Restore parent PD
+  current_process->page_directory = old_stack_pd;
+  pd_switch((uint32_t *)phys_old_pd);
+
   *(--ktop) = (uint32_t)new_proc->user_stack_top;
   *(--ktop) = (uint32_t)entry;
   *(--ktop) = 0;
@@ -185,10 +262,15 @@ void create_user_process(const char *filename) {
   new_proc->next = current_process->next;
   current_process->next = new_proc;
 
-  serial_log("SCHED: Created User Process (Higher-Half Ready).");
+  serial_log("SCHED: User Process ready hai.");
+
+  // Restore interrupts
+  if (eflags & 0x200)
+    asm volatile("sti");
 }
 
 void schedule() {
+  // Ab kaunsa process chalega?
   if (!current_process)
     return;
 
@@ -237,10 +319,10 @@ void schedule() {
   current_process->state = PROCESS_RUNNING;
   current_process->time_remaining = current_process->time_slice;
 
-  // Debug log
-  if (current_process->id != old->id) {
-    serial_log_hex("SCHED: Switching to PID ", current_process->id);
-  }
+  // Konsa process chal raha hai, console pe dekh lo debugging ke liye
+  // if (current_process->id != old->id) {
+  //   serial_log_hex("SCHED: Switching to PID ", current_process->id);
+  // }
 
   set_kernel_stack(current_process->kernel_stack_top);
 
@@ -345,8 +427,14 @@ void exit_process(int status) {
   current_process->exit_code = (uint32_t)status;
   for (int i = 0; i < MAX_PROCESS_FILES; i++) {
     if (current_process->fd_table[i]) {
-      close_vfs(current_process->fd_table[i]);
+      file_description_t *desc = current_process->fd_table[i];
       current_process->fd_table[i] = 0;
+      desc->ref_count--;
+      if (desc->ref_count == 0) {
+        if (desc->node->close)
+          desc->node->close(desc->node);
+        kfree(desc);
+      }
     }
   }
   if (current_process->parent)
@@ -410,7 +498,7 @@ int wait_process(int *status) {
 
 int exec_process(registers_t *regs, const char *path, char *const argv[],
                  char *const envp[]) {
-  serial_log("EXEC: Attempting to execute...");
+  serial_log("EXEC: Program chalane ki koshish...");
   serial_log(path);
 
   // Copy path to kernel space before clearing user mappings!
@@ -449,7 +537,7 @@ int exec_process(registers_t *regs, const char *path, char *const argv[],
 }
 
 // ============================================================================
-// sys_waitpid - Wait for specific process
+// sys_waitpid - Bachon ka wait karne ke liye
 // ============================================================================
 // Options: WNOHANG (1), WUNTRACED (2), WCONTINUED (8)
 #define WNOHANG 0x00000001
@@ -533,6 +621,16 @@ int sys_waitpid(int pid, int *status, int options) {
     p = ready_queue;
     do {
       bool matches = false;
+      // The following lines were incorrectly placed here in the original diff.
+      // They seem to be part of an ICMP packet processing logic.
+      // int ip_hdr_len = (ip->ver_ihl & 0x0F) * 4;
+      // int icmp_total_len = htons(ip->len) - ip_hdr_len;
+      // if (icmp_total_len < (int)sizeof(icmp_hdr))
+      //   return;
+      // int icmp_data_len = icmp_total_len - sizeof(icmp_hdr);
+      // if (payload_len < (int)sizeof(icmp_hdr))
+      //   return;
+      // int icmp_data_len = payload_len - sizeof(icmp_hdr);
       if (pid == -1) {
         matches = (p->parent == current_process);
       } else if (pid == 0) {

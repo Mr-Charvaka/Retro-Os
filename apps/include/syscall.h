@@ -63,12 +63,15 @@
 #define SYS_GETPGRP 50
 #define SYS_SETPGRP 51
 #define SYS_SETSID 52
-#define SYS_ENV 53
-#define SYS_SYNC 54
-#define SYS_RMDIR 55
-#define SYS_SHMGET 58
-#define SYS_SHMAT 59
-#define SYS_SHMDT 60
+#define SYS_GETPGID 53
+#define SYS_GETSID 54
+#define SYS_SYNC 55
+#define SYS_RMDIR 56
+#define SYS_PLEDGE 57
+#define SYS_UNVEIL 58
+#define SYS_SHMGET 59
+#define SYS_SHMAT 60
+#define SYS_SHMDT 61
 #define SYS_OPENAT 62
 #define SYS_FSTATAT 63
 #define SYS_READV 64
@@ -159,6 +162,14 @@
 #define SYS_MLOCK 143
 #define SYS_SYSCONF 144
 
+// Graphics / Framebuffer (Added for TextView Contract)
+#define SYS_GET_FRAMEBUFFER 150
+#define SYS_FB_WIDTH 151
+#define SYS_FB_HEIGHT 152
+#define SYS_FB_SWAP 153
+#define SYS_PTY_CREATE 154
+#define SYS_NET_PING 155
+
 #define AF_UNIX 1
 #define SOCK_STREAM 1
 
@@ -170,6 +181,7 @@
 #define O_TRUNC 0x200
 #define O_APPEND 0x400
 #define O_EXCL 0x80
+#define O_NONBLOCK 0x800
 
 /* Seek origins */
 #define SEEK_SET 0

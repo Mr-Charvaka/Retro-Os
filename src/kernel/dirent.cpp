@@ -1,6 +1,6 @@
 // ============================================================================
-// dirent.cpp - POSIX Directory Stream Implementation
-// Entirely hand-crafted for Retro-OS kernel
+// dirent.cpp - POSIX Directory Stream ka poora scene yahan hai
+// Apne Retro-OS kernel ke liye hand-crafted logic
 // ============================================================================
 
 #include "../include/dirent.h"
@@ -20,7 +20,7 @@ static DIR dir_streams[MAX_DIR_STREAMS];
 static int dir_streams_initialized = 0;
 
 // ============================================================================
-// Initialize directory stream pool
+// Directory stream pool ko initialize karo
 // ============================================================================
 static void init_dir_streams(void) {
   if (dir_streams_initialized)
@@ -33,7 +33,7 @@ static void init_dir_streams(void) {
 }
 
 // ============================================================================
-// Allocate a directory stream
+// Ek directory stream dhoondo aur do
 // ============================================================================
 static DIR *alloc_dir_stream(void) {
   init_dir_streams();
@@ -49,7 +49,7 @@ static DIR *alloc_dir_stream(void) {
 }
 
 // ============================================================================
-// opendir - Open a directory stream
+// opendir - Directory kholo aur stream banao
 // ============================================================================
 DIR *opendir(const char *name) {
   if (!name)
@@ -59,7 +59,7 @@ DIR *opendir(const char *name) {
   if (!node)
     return 0;
 
-  // Check if it's a directory
+  // Pehle dekho directory hai bhi ki nahi
   if ((node->flags & 0x7) != VFS_DIRECTORY)
     return 0;
 
@@ -76,13 +76,13 @@ DIR *opendir(const char *name) {
 }
 
 // ============================================================================
-// fdopendir - Open directory stream from file descriptor
+// fdopendir - File descriptor se directory stream kholo
 // ============================================================================
 DIR *fdopendir(int fd) {
   if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
     return 0;
 
-  vfs_node_t *node = current_process->fd_table[fd];
+  vfs_node_t *node = current_process->fd_table[fd]->node;
   if ((node->flags & 0x7) != VFS_DIRECTORY)
     return 0;
 
@@ -98,7 +98,7 @@ DIR *fdopendir(int fd) {
 }
 
 // ============================================================================
-// readdir - Read next directory entry
+// readdir - Agli directory entry fetch karo
 // ============================================================================
 struct dirent *readdir(DIR *dirp) {
   if (!dirp || dirp->closed || !dirp->node)
@@ -111,7 +111,7 @@ struct dirent *readdir(DIR *dirp) {
   if (!entry)
     return 0;
 
-  // Copy to internal buffer
+  // Internal buffer mein copy karo
   dirp->entry.d_ino = entry->d_ino;
   dirp->entry.d_off = dirp->position;
   dirp->entry.d_reclen = sizeof(struct dirent);
@@ -148,7 +148,7 @@ int readdir_r(DIR *dirp, struct dirent *entry, struct dirent **result) {
   struct dirent *vfs_entry = dirp->node->readdir(dirp->node, dirp->position);
   if (!vfs_entry) {
     *result = 0;
-    return 0; // End of directory
+    return 0; // Khatam, tata bye bye
   }
 
   entry->d_ino = vfs_entry->d_ino;
@@ -174,7 +174,7 @@ void rewinddir(DIR *dirp) {
 }
 
 // ============================================================================
-// seekdir - Set directory stream position
+// seekdir - Directory position set karo (ekdum fixed)
 // ============================================================================
 void seekdir(DIR *dirp, long loc) {
   if (!dirp || dirp->closed)
@@ -192,7 +192,7 @@ long telldir(DIR *dirp) {
 }
 
 // ============================================================================
-// closedir - Close directory stream
+// closedir - Directory stream bandh karo
 // ============================================================================
 int closedir(DIR *dirp) {
   if (!dirp)
@@ -230,7 +230,7 @@ int dirfd(DIR *dirp) {
 }
 
 // ============================================================================
-// sys_getdents - Get directory entries (Linux-style syscall)
+// sys_getdents - Directory entries nikal lo (Linux-style)
 // ============================================================================
 struct linux_dirent {
   unsigned long d_ino;     // Inode number
@@ -246,7 +246,7 @@ int sys_getdents(int fd, void *dirp, unsigned int count) {
   if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
     return -EBADF;
 
-  vfs_node_t *node = current_process->fd_table[fd];
+  vfs_node_t *node = current_process->fd_table[fd]->node;
   if ((node->flags & 0x7) != VFS_DIRECTORY)
     return -ENOTDIR;
 
@@ -264,7 +264,7 @@ int sys_getdents(int fd, void *dirp, unsigned int count) {
   while (bytes_written < count) {
     struct dirent *entry = node->readdir(node, pos);
     if (!entry)
-      break; // End of directory
+      break; // Bas ab aur nahi hai
 
     // Calculate entry size
     size_t namelen = strlen(entry->d_name);
@@ -272,7 +272,7 @@ int sys_getdents(int fd, void *dirp, unsigned int count) {
     reclen = (reclen + 3) & ~3; // Align to 4 bytes
 
     if (bytes_written + reclen > count)
-      break; // Buffer full
+      break; // Jagah khatam (buffer full)
 
     // Fill in the entry
     struct linux_dirent *ld = (struct linux_dirent *)(buf + bytes_written);
@@ -290,7 +290,7 @@ int sys_getdents(int fd, void *dirp, unsigned int count) {
 }
 
 // ============================================================================
-// scandir - Scan a directory (simplified implementation)
+// scandir - Poori directory scan maaro
 // ============================================================================
 int scandir(const char *dirpath, struct dirent ***namelist,
             int (*filter)(const struct dirent *),
@@ -345,7 +345,7 @@ int scandir(const char *dirpath, struct dirent ***namelist,
 }
 
 // ============================================================================
-// alphasort - Compare directory entries alphabetically
+// alphasort - A-Z sort karne ke liye help
 // ============================================================================
 int alphasort(const struct dirent **a, const struct dirent **b) {
   return strcmp((*a)->d_name, (*b)->d_name);

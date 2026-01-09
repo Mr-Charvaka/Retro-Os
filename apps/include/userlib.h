@@ -291,11 +291,7 @@ static inline void print_hex(unsigned int value) {
 }
 
 /* Simple printf-like function */
-static inline void printf(const char *fmt, ...) {
-  /* Note: This is a simplified printf without full varargs support */
-  /* For the OS, we use the direct print functions instead */
-  syscall_print(fmt);
-}
+// printf removed - apps should implement or use a proper libc version
 
 /* Read a line from stdin (fd 0) */
 static inline int getline(char *buf, int maxlen) {

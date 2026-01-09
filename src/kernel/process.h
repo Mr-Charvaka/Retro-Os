@@ -19,6 +19,13 @@ typedef enum {
   PROCESS_SLEEPING // Sleeping on timer
 } process_state_t;
 
+typedef struct file_description {
+  vfs_node_t *node;   // The actual VFS node
+  uint64_t offset;    // Current seek position (cursor)
+  uint32_t flags;     // Open flags (O_RDONLY, etc)
+  uint32_t ref_count; // Reference count for fork/dup
+} file_description_t;
+
 typedef struct process {
   uint32_t id;               // Process ID
   uint32_t pgid;             // Process Group ID
@@ -32,7 +39,7 @@ typedef struct process {
   uint32_t entry_point;      // User mode entry point
   uint32_t user_stack_top;   // Top of user stack
   uint32_t heap_end;         // Current program break (end of heap)
-  vfs_node_t *fd_table[MAX_PROCESS_FILES]; // File Descriptor Table
+  file_description_t *fd_table[MAX_PROCESS_FILES]; // File Descriptor Table
 
   // User/Group IDs
   uint32_t uid;  // Real user ID
@@ -90,9 +97,13 @@ typedef struct process {
 extern process_t *current_process;
 extern process_t *ready_queue;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void init_multitasking();
 void create_kernel_thread(void (*fn)());
-void create_user_process(const char *filename);
+void create_user_process(const char *filename, char *const argv[]);
 void schedule();
 int get_pid();
 void enter_user_mode();
@@ -103,6 +114,10 @@ int sys_waitpid(int pid, int *status, int options);
 int sys_waitid(int idtype, int id, void *infop, int options);
 int exec_process(registers_t *regs, const char *path, char *const argv[],
                  char *const envp[]);
+
+#ifdef __cplusplus
+}
+#endif
 
 // Immediate exit (no cleanup)
 void sys__exit(int status);

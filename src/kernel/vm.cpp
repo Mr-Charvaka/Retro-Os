@@ -17,7 +17,7 @@ uint32_t *pd_create() {
     }
   }
 
-  return (uint32_t *)phys_pd; // Return physical address for CR3 usage
+  return (uint32_t *)phys_pd; // CR3 ke liye physical address wapas karo
 }
 
 uint32_t *pd_clone(uint32_t *source_pd_phys) {
@@ -141,11 +141,11 @@ void vm_clear_user_mappings() {
       uint32_t *pt = (uint32_t *)PHYS_TO_VIRT(pd[i] & 0xFFFFF000);
       for (int j = 0; j < 1024; j++) {
         if (pt[j] & 1) {
-          pmm_free_block((void *)(pt[j] & 0xFFFFF000));
+          pmm_free_block((void *)(uintptr_t)(pt[j] & 0xFFFFF000));
           pt[j] = 0;
         }
       }
-      pmm_free_block((void *)(pd[i] & 0xFFFFF000));
+      pmm_free_block((void *)(uintptr_t)(pd[i] & 0xFFFFF000));
       pd[i] = 0;
     }
   }

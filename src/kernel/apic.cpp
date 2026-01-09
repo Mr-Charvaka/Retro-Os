@@ -31,11 +31,11 @@ void lapic_init() {
   lapic_base = madt->lapic_addr;
   serial_log_hex("LAPIC: Base at ", lapic_base);
 
-  // Read Local APIC ID (Register 0x20, bits 24-31)
+  // Local APIC ID padho (Register 0x20, bits 24-31)
   cpu_lapic_id = (lapic_read(LAPIC_ID) >> 24) & 0xFF;
   serial_log_hex("LAPIC: CPU APIC ID: ", cpu_lapic_id);
 
-  // Spurious Interrupt Vector - Set bit 8 to enable APIC
+  // Spurious Interrupt Vector - Bit 8 set karke APIC chalu karo
   lapic_write(LAPIC_SPURIOUS, lapic_read(LAPIC_SPURIOUS) | 0x1FF);
 
   serial_log("LAPIC: Initialized and Enabled.");
@@ -79,18 +79,18 @@ void ioapic_init() {
     ptr += entry->length;
   }
 
-  // Disable legacy PIC
+  // Purane PIC ko chutti de do (Disable legacy PIC)
   outb(0x21, 0xFF);
   outb(0xA1, 0xFF);
   serial_log("PIC: Disabled.");
 
-  // Default redirection: Map 16 legacy IRQs to vectors 32-47
-  // We want to ensure they are UNMASKED (bit 16 is 0)
+  // Default redirection: 16 purane IRQs ko vector 32-47 pe map karo
+  // Dhyan rahe ye UNMASKED hone chahiye (bit 16 is 0)
   // Delivery mode: Fixed (000), Destination mode: Physical (0)
   for (int i = 0; i < 16; i++) {
     uint32_t vector = 32 + i;
 
-    // Low 32 bits of entry:
+    // Low 32 bits ka hisaab:
     // bit 0-7: vector
     // bit 8-10: delivery mode (000 = Fixed)
     // bit 11: destination mode (0 = Physical)
@@ -100,13 +100,13 @@ void ioapic_init() {
     // bit 15: trigger mode (0 = Edge, 1 = Level)
     // bit 16: mask (0 = Unmasked, 1 = Masked)
     uint32_t low_part =
-        vector | 0x10000; // Masked by default, Edge, Active High, Fixed
+        vector | 0x10000; // Default: Masked, Edge, Active High, Fixed
 
     uint32_t target_gsi = i;
     if (isos[i]) {
       target_gsi = isos[i]->global_system_interrupt;
-      // Many ISOs (like IRQ0 to GSI 2) are active high/edge
-      // but let's be explicit if flags indicate otherwise
+      // Bahut saare ISOs (jaise IRQ0 -> GSI 2) active high/edge hote hain
+      // par agar flags kuch aur bole toh wo maano
       // iso->flags: bit 0-1 (Polarity), bit 2-3 (Trigger Mode)
       // Polarity: 1=AH, 3=AL. Trigger: 1=Edge, 3=Level.
       if ((isos[i]->flags & 3) == 3)
@@ -151,8 +151,8 @@ void ioapic_set_mask(uint8_t irq, bool masked) {
 }
 
 void apic_map_hardware() {
-  // Standard APIC addresses (mapped before ACPI discovery)
-  // LAPIC is at 0xFEE00000, IO-APIC is at 0xFEC00000
+  // Standard APIC addresses (ACPI discovery se pehle map kar lo)
+  // LAPIC 0xFEE00000 pe, IO-APIC 0xFEC00000 pe hota hai
   paging_map(0xFEE00000, 0xFEE00000, 3); // LAPIC
   paging_map(0xFEC00000, 0xFEC00000, 3); // IO-APIC
 }

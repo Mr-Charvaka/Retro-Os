@@ -18,7 +18,7 @@ static socket_t *alloc_socket() {
     if (!sockets[i]) {
       sockets[i] = (socket_t *)kmalloc(sizeof(socket_t));
       if (!sockets[i]) {
-        serial_log("SOCKET ERROR: OOM in alloc_socket");
+        serial_log("SOCKET ERROR: memory kam pad gayi alloc_socket mein");
         return 0;
       }
       memset(sockets[i], 0, sizeof(socket_t));
@@ -33,7 +33,7 @@ static socket_t *alloc_socket() {
       return sockets[i];
     }
   }
-  serial_log("SOCKET ERROR: Max sockets reached");
+  serial_log("SOCKET ERROR: Sockets full ho gaye hain");
   return 0;
 }
 
@@ -58,7 +58,7 @@ uint32_t socket_read(vfs_node_t *node, uint32_t offset, uint32_t size,
     sock->head = (sock->head + 1) % 4096;
   }
 
-  // Wake up writers
+  // Baaki processes ko jagao agar wo wait kar rahe hain
   process_t *p = ready_queue;
   if (p) {
     process_t *start = p;
@@ -95,7 +95,7 @@ uint32_t socket_write(vfs_node_t *node, uint32_t offset, uint32_t size,
     peer->tail = next_tail;
   }
 
-  // Wake up readers on the peer side
+  // Peer side pe jo wait kar rahe hain unhe jagao
   process_t *p = ready_queue;
   if (p) {
     process_t *start = p;
@@ -116,7 +116,7 @@ void socket_close(vfs_node_t *node) {
 
   sock->state = SOCKET_CLOSED;
 
-  // Remove from global array
+  // Global array se hatao isse
   for (int i = 0; i < MAX_SOCKETS; i++) {
     if (sockets[i] == sock) {
       sockets[i] = 0;
@@ -124,7 +124,7 @@ void socket_close(vfs_node_t *node) {
     }
   }
 
-  // Free resources
+  // Saman saaf karo (free resources)
   if (sock->buffer) {
     kfree(sock->buffer);
   }
@@ -137,7 +137,7 @@ int sys_socket(int domain, int type, int protocol) {
 
   socket_t *sock = alloc_socket();
   if (!sock) {
-    serial_log("SOCKET ERROR: alloc_socket failed");
+    serial_log("SOCKET ERROR: alloc_socket fail ho gaya");
     return -1;
   }
 
@@ -148,12 +148,12 @@ int sys_socket(int domain, int type, int protocol) {
   vfs_node_t *node = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
   if (!node) {
     serial_log("SOCKET ERROR: OOM for vfs_node");
-    // TODO: free sock
+    // TODO: sock ko free karna hai
     return -1;
   }
   memset(node, 0, sizeof(vfs_node_t));
   strcpy(node->name, "socket");
-  node->impl = (uint32_t)(uintptr_t)sock;
+  node->impl = (void *)sock;
   node->read = socket_read;
   node->write = socket_write;
   node->close = socket_close;
@@ -162,19 +162,26 @@ int sys_socket(int domain, int type, int protocol) {
 
   for (int i = 0; i < MAX_PROCESS_FILES; i++) {
     if (!current_process->fd_table[i]) {
-      current_process->fd_table[i] = node;
+      file_description_t *desc =
+          (file_description_t *)kmalloc(sizeof(file_description_t));
+      desc->node = node;
+      desc->offset = 0;
+      desc->flags = O_RDWR;
+      desc->ref_count = 1;
+      current_process->fd_table[i] = desc;
       return i;
     }
   }
 
-  serial_log("SOCKET ERROR: Process FD table full");
+  serial_log("SOCKET ERROR: FD table full hai bhai");
   return -1;
 }
 
 int sys_bind(int sockfd, const char *path) {
-  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES)
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd])
     return -1;
-  vfs_node_t *node = current_process->fd_table[sockfd];
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node || node->flags != VFS_SOCKET)
     return -1;
 
@@ -182,20 +189,21 @@ int sys_bind(int sockfd, const char *path) {
   strncpy(sock->bind_path, path, 127);
   sock->bind_path[127] = 0;
   sock->state = SOCKET_BOUND;
-  serial_log("SOCKET: sys_bind bound socket to path:");
+  serial_log("SOCKET: sys_bind ne is path pe socket bandha:");
   serial_log(sock->bind_path);
 
-  // In a real system we'd add this to VFS, but for now we'll just store it in
-  // the array
+  // Asli system mein hum ise VFS mein add karte, lekin abhi ke liye bas array
+  // mein rakhenge
   return 0;
 }
 
 int sys_connect(int sockfd, const char *path) {
-  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES) {
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd]) {
     serial_log("SOCKET ERROR: Invalid sockfd");
     return -1;
   }
-  vfs_node_t *node = current_process->fd_table[sockfd];
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node) {
     serial_log("SOCKET ERROR: Node is null");
     return -1;
@@ -223,11 +231,12 @@ int sys_connect(int sockfd, const char *path) {
   serial_log("SOCKET: sys_connect looking for path:");
   serial_log(kpath);
 
-  // Find the bound socket
+  // Bound socket dhundo
   socket_t *server = 0;
   for (int i = 0; i < MAX_SOCKETS; i++) {
-    if (sockets[i] && sockets[i]->state == SOCKET_BOUND) {
-      serial_log("SOCKET: Checking bound socket:");
+    if (sockets[i] && (sockets[i]->state == SOCKET_BOUND ||
+                       sockets[i]->state == SOCKET_LISTENING)) {
+      serial_log("SOCKET: Bound socket check kar rahe hain:");
       serial_log(sockets[i]->bind_path);
       if (strcmp(sockets[i]->bind_path, kpath) == 0) {
         server = sockets[i];
@@ -239,12 +248,12 @@ int sys_connect(int sockfd, const char *path) {
   if (!server)
     return -1;
 
-  // Add to server's backlog
+  // Server ki backlog mein dalo
   if (server->backlog_count < 8) {
     server->backlog[server->backlog_count++] = sock;
     sock->state = SOCKET_CONNECTING;
 
-    // Wake up the server! (It might be waiting in accept)
+    // Server ko jagao! (Accept mein betha hoga bechara)
     process_t *p = ready_queue;
     if (p) {
       process_t *start = p;
@@ -255,7 +264,7 @@ int sys_connect(int sockfd, const char *path) {
       } while (p && p != start);
     }
 
-    // Block until connected
+    // Sula do jab tak connect nahi hota
     while (sock->state == SOCKET_CONNECTING) {
       current_process->state = PROCESS_WAITING;
       schedule();
@@ -267,9 +276,10 @@ int sys_connect(int sockfd, const char *path) {
 }
 
 int sys_accept(int sockfd) {
-  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES)
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd])
     return -1;
-  vfs_node_t *node = current_process->fd_table[sockfd];
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node || node->flags != VFS_SOCKET)
     return -1;
   socket_t *server = (socket_t *)(uintptr_t)node->impl;
@@ -284,7 +294,7 @@ int sys_accept(int sockfd) {
     server->backlog[i] = server->backlog[i + 1];
   server->backlog_count--;
 
-  // Create a new socket for the connection
+  // Connection ke liye naya socket banao
   socket_t *conn = alloc_socket();
   conn->state = SOCKET_CONNECTED;
   conn->peer = client;
@@ -294,7 +304,7 @@ int sys_accept(int sockfd) {
   vfs_node_t *conn_node = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
   memset(conn_node, 0, sizeof(vfs_node_t));
   strcpy(conn_node->name, "socket_conn");
-  conn_node->impl = (uint32_t)(uintptr_t)conn;
+  conn_node->impl = (void *)conn;
   conn_node->read = socket_read;
   conn_node->write = socket_write;
   conn_node->close = socket_close;
@@ -303,9 +313,15 @@ int sys_accept(int sockfd) {
 
   for (int i = 0; i < MAX_PROCESS_FILES; i++) {
     if (!current_process->fd_table[i]) {
-      current_process->fd_table[i] = conn_node;
+      file_description_t *desc =
+          (file_description_t *)kmalloc(sizeof(file_description_t));
+      desc->node = conn_node;
+      desc->offset = 0;
+      desc->flags = O_RDWR;
+      desc->ref_count = 1;
+      current_process->fd_table[i] = desc;
 
-      // Wake up the client!
+      // Client ko jagao!
       process_t *p = ready_queue;
       if (p) {
         process_t *start = p;
@@ -323,15 +339,36 @@ int sys_accept(int sockfd) {
   return -1;
 }
 
-// ============================================================================
-// Extended Socket Functions for POSIX Compliance
-// ============================================================================
+// Check if accept will block
+int socket_can_accept(int sockfd) {
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd])
+    return 0;
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
+  if (!node || node->flags != VFS_SOCKET)
+    return 0;
+  socket_t *server = (socket_t *)(uintptr_t)node->impl;
+  return server->backlog_count > 0;
+}
+
+// Check if socket has data
+int socket_can_read(int sockfd) {
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd])
+    return 0;
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
+  if (!node || node->flags != VFS_SOCKET)
+    return 0;
+  socket_t *sock = (socket_t *)(uintptr_t)node->impl;
+  return sock->head != sock->tail; // Buffer not empty
+}
 
 // Listen for connections
 int sys_listen(int sockfd, int backlog) {
-  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES)
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd])
     return -1;
-  vfs_node_t *node = current_process->fd_table[sockfd];
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node || node->flags != VFS_SOCKET)
     return -1;
   socket_t *sock = (socket_t *)(uintptr_t)node->impl;
@@ -352,9 +389,10 @@ int sys_listen(int sockfd, int backlog) {
 ssize_t sys_send(int sockfd, const void *buf, size_t len, int flags) {
   (void)flags; // Flags not fully implemented
 
-  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES || !buf)
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd] || !buf)
     return -1;
-  vfs_node_t *node = current_process->fd_table[sockfd];
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node || node->flags != VFS_SOCKET)
     return -1;
 
@@ -365,9 +403,10 @@ ssize_t sys_send(int sockfd, const void *buf, size_t len, int flags) {
 ssize_t sys_recv(int sockfd, void *buf, size_t len, int flags) {
   (void)flags; // Flags not fully implemented
 
-  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES || !buf)
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd] || !buf)
     return -1;
-  vfs_node_t *node = current_process->fd_table[sockfd];
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node || node->flags != VFS_SOCKET)
     return -1;
 
@@ -394,9 +433,10 @@ ssize_t sys_recvfrom(int sockfd, void *buf, size_t len, int flags,
 
 // Get local socket name
 int sys_getsockname(int sockfd, void *addr, uint32_t *addrlen) {
-  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES)
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd])
     return -1;
-  vfs_node_t *node = current_process->fd_table[sockfd];
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node || node->flags != VFS_SOCKET)
     return -1;
   socket_t *sock = (socket_t *)(uintptr_t)node->impl;
@@ -420,9 +460,10 @@ int sys_getsockname(int sockfd, void *addr, uint32_t *addrlen) {
 
 // Get peer socket name
 int sys_getpeername(int sockfd, void *addr, uint32_t *addrlen) {
-  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES)
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd])
     return -1;
-  vfs_node_t *node = current_process->fd_table[sockfd];
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node || node->flags != VFS_SOCKET)
     return -1;
   socket_t *sock = (socket_t *)(uintptr_t)node->impl;
@@ -469,9 +510,10 @@ int sys_setsockopt(int sockfd, int level, int optname, const void *optval,
   (void)optval;
   (void)optlen;
 
-  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES)
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd])
     return -1;
-  vfs_node_t *node = current_process->fd_table[sockfd];
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node || node->flags != VFS_SOCKET)
     return -1;
 
@@ -497,9 +539,10 @@ int sys_getsockopt(int sockfd, int level, int optname, void *optval,
                    uint32_t *optlen) {
   (void)level;
 
-  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES)
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd])
     return -1;
-  vfs_node_t *node = current_process->fd_table[sockfd];
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node || node->flags != VFS_SOCKET)
     return -1;
   socket_t *sock = (socket_t *)(uintptr_t)node->impl;
@@ -541,9 +584,10 @@ int sys_getsockopt(int sockfd, int level, int optname, void *optval,
 #define SHUT_RDWR 2
 
 int sys_shutdown(int sockfd, int how) {
-  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES)
+  if (sockfd < 0 || sockfd >= MAX_PROCESS_FILES ||
+      !current_process->fd_table[sockfd])
     return -1;
-  vfs_node_t *node = current_process->fd_table[sockfd];
+  vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node || node->flags != VFS_SOCKET)
     return -1;
   socket_t *sock = (socket_t *)(uintptr_t)node->impl;
@@ -615,8 +659,8 @@ int sys_socketpair(int domain, int type, int protocol, int sv[2]) {
 
   strcpy(node1->name, "socketpair");
   strcpy(node2->name, "socketpair");
-  node1->impl = (uint32_t)(uintptr_t)sock1;
-  node2->impl = (uint32_t)(uintptr_t)sock2;
+  node1->impl = (void *)sock1;
+  node2->impl = (void *)sock2;
   node1->read = socket_read;
   node2->read = socket_read;
   node1->write = socket_write;
@@ -632,12 +676,20 @@ int sys_socketpair(int domain, int type, int protocol, int sv[2]) {
   int fd1 = -1, fd2 = -1;
   for (int i = 0; i < MAX_PROCESS_FILES && (fd1 < 0 || fd2 < 0); i++) {
     if (!current_process->fd_table[i]) {
+      file_description_t *desc =
+          (file_description_t *)kmalloc(sizeof(file_description_t));
+      desc->offset = 0;
+      desc->flags = O_RDWR;
+      desc->ref_count = 1;
+
       if (fd1 < 0) {
         fd1 = i;
-        current_process->fd_table[i] = node1;
+        desc->node = node1;
+        current_process->fd_table[i] = desc;
       } else {
         fd2 = i;
-        current_process->fd_table[i] = node2;
+        desc->node = node2;
+        current_process->fd_table[i] = desc;
       }
     }
   }

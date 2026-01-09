@@ -40,24 +40,24 @@ def inject_file(f, filename_83, source_path, start_cluster):
     f.write(struct.pack('<H', 0xFFFF))
     
     # 3. Create Directory Entry
-    # For simplicity, append to root dir (find first empty)
     f.seek(ROOT_OFFSET)
     while True:
         entry_data = f.read(32)
         if not entry_data or entry_data[0] == 0:
-            f.seek(-32, 1) if entry_data else f.seek(0, 2)
+            if not entry_data: f.seek(0, 2)
+            else: f.seek(-32, 1)
             break
             
-    name, ext = filename_83.split('.')
-    name = name.ljust(8)
-    ext = ext.ljust(3)
+    name_parts = filename_83.split('.')
+    name = name_parts[0].ljust(8)
+    ext = name_parts[1].ljust(3) if len(name_parts) > 1 else "   "
     full_name = f"{name}{ext}".encode('ascii')
     
     entry = struct.pack('<11sBBBHHHHHHHL', 
         full_name, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, start_cluster, size)
     f.write(entry)
     
-    print(f"Injected {filename_83} ({size} bytes, {sectors} sectors) at cluster {start_cluster}.")
+    print(f"Injected {filename_83} ({size} bytes) at cluster {start_cluster}.")
     return sectors, cluster + 1
 
 def inject():
@@ -66,63 +66,51 @@ def inject():
         return
         
     with open(IMG_FILE, "r+b") as f:
-        # Clear Root Dir and FAT (Optional, but safer for re-builds)
+        # Clear Root Dir and FAT
         f.seek(ROOT_OFFSET)
         f.write(b'\x00' * (ROOT_DIR_SECTORS * SECTOR_SIZE))
         f.seek(FAT_OFFSET)
-        # Initialize FAT with media descriptor and root directory cluster
-        f.write(b'\xF8\xFF\xFF\xFF') # FAT start (standard for FAT16/Hard Disk)
-        # Clear the rest of the FAT sectors
-        for _ in range(NUM_FATS):
-            f.write(b'\x00' * (SECTORS_PER_FAT * SECTOR_SIZE - 4))
-            if _ == 0: # Also clear second FAT
-                 f.seek(FAT_OFFSET + SECTORS_PER_FAT * SECTOR_SIZE)
+        f.write(b'\xF8\xFF\xFF\xFF')
+        f.seek(FAT_OFFSET + SECTORS_PER_FAT * SECTOR_SIZE)
+        f.write(b'\xF8\xFF\xFF\xFF')
         
         current_cluster = 2
         
-        # Inject Wallpaper
-        sec, next_clust = inject_file(f, "WALL.BMP", "assets/wallpaper.bmp", current_cluster)
-        current_cluster = next_clust
+        files_to_inject = [
+            ("WALL.BMP", "assets/wallpaper.bmp"),
+            ("INIT.ELF", "apps/init.elf"),
+            ("HELLO.ELF", "apps/hello.elf"),
+            ("CALC.ELF", "apps/calc.elf"),
+            ("DF.ELF", "apps/df.elf"),
+            ("EXPLORER.ELF", "apps/explorer.elf"),
+            ("SH.ELF", "apps/sh.elf"),
+            ("TERM.ELF", "apps/terminal.elf"),
+            ("LS.ELF", "apps/ls.elf"),
+            ("CAT.ELF", "apps/cat.elf"),
+            ("MKDIR.ELF", "apps/mkdir.elf"),
+            ("TEXTVIEW.ELF", "apps/textview.elf"),
+            ("POSIX_T.ELF", "apps/posix_test.elf"),
+            ("POSIX_S.ELF", "apps/posix_suite.elf"),
+            ("UTILS.ELF", "apps/file_utils.elf"),
+            ("NOTEPAD.ELF", "apps/notepad.elf"),
+            ("TEST.ELF", "apps/test.elf"),
+            ("PING.ELF", "apps/ping.elf"),
+            ("TCPTEST.ELF", "apps/tcptest.elf"),
+            ("TRUTH.DAT", "TRUTH.DAT"),
+        ]
         
-        # Inject Hello ELF
-        if os.path.exists("apps/hello.elf"):
-            sec, next_clust = inject_file(f, "HELLO.ELF", "apps/hello.elf", current_cluster)
-            current_cluster = next_clust
-            
-        # Inject Init ELF
-        if os.path.exists("apps/init.elf"):
-            sec, next_clust = inject_file(f, "INIT.ELF", "apps/init.elf", current_cluster)
-            current_cluster = next_clust
+        # Ensure TRUTH.DAT exists for injection
+        if not os.path.exists("TRUTH.DAT"):
+            # Size = 256 * 66 (approx) + 64 * 4096 + 8
+            # Using 300KB to be safe and cover alignment
+            with open("TRUTH.DAT", "wb") as t:
+                t.write(b'\x00' * 300000)
+            print("Created dummy TRUTH.DAT for persistence.")
 
-        # Inject Calc ELF
-        if os.path.exists("apps/calc.elf"):
-            sec, next_clust = inject_file(f, "CALC.ELF", "apps/calc.elf", current_cluster)
-            current_cluster = next_clust
-
-        # Inject DF ELF
-        if os.path.exists("apps/df.elf"):
-            sec, next_clust = inject_file(f, "DF.ELF", "apps/df.elf", current_cluster)
-            current_cluster = next_clust
-
-        # Inject FM ELF
-        if os.path.exists("apps/fm.elf"):
-            sec, next_clust = inject_file(f, "FM.ELF", "apps/fm.elf", current_cluster)
-            current_cluster = next_clust
-
-        # Inject Demo IPC ELF
-        if os.path.exists("apps/demo_ipc.elf"):
-            sec, next_clust = inject_file(f, "DEMO_IPC.ELF", "apps/demo_ipc.elf", current_cluster)
-            current_cluster = next_clust
-
-        # Inject POSIX Test ELF
-        if os.path.exists("apps/posix_test.elf"):
-            sec, next_clust = inject_file(f, "POSIX_T.ELF", "apps/posix_test.elf", current_cluster)
-            current_cluster = next_clust
-
-        # Inject POSIX Suite ELF
-        if os.path.exists("apps/posix_suite.elf"):
-            sec, next_clust = inject_file(f, "POSIX_SU.ELF", "apps/posix_suite.elf", current_cluster)
-            current_cluster = next_clust
+        for name83, path in files_to_inject:
+            if os.path.exists(path):
+                sec, next_clust = inject_file(f, name83, path, current_cluster)
+                current_cluster = next_clust
 
 if __name__ == "__main__":
     inject()

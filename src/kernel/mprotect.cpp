@@ -1,6 +1,6 @@
 // ============================================================================
 // mprotect.cpp - Memory Protection Implementation
-// Entirely hand-crafted for Retro-OS kernel
+// Poora haath se banaya hai Retro-OS kernel ke liye
 // ============================================================================
 
 #include "../drivers/serial.h"
@@ -10,7 +10,6 @@
 #include "paging.h" // Correct local include
 #include "process.h"
 #include "vm.h"
-
 
 extern "C" {
 
@@ -56,24 +55,24 @@ int sys_mprotect(void *addr, size_t len, int prot) {
   if (len == 0)
     return 0;
 
-  // Round up length to page boundary
+  // Size ko page boundary pe round up karo
   size_t pages = (len + 0xFFF) / 0x1000;
 
-  // Convert PROT_* to page flags
+  // PROT_* ko page flags mein convert karo
   uint32_t flags = PTE_PRESENT;
   if (prot & PROT_WRITE)
     flags |= PTE_WRITE;
   if (!(prot & PROT_EXEC))
     flags |= PTE_NX; // No-execute if execute not requested
 
-  // Apply protection to each page
+  // Har page pe protection lagao
   for (size_t i = 0; i < pages; i++) {
     uintptr_t vaddr = start + i * 0x1000;
 
-    // Get current page table entry
+    // Current page table entry nikalo
     uint32_t *pte = paging_get_pte(vaddr);
     if (!pte || !(*pte & PTE_PRESENT)) {
-      // Page not mapped - skip
+      // Page mapped nahi hai - chhod do
       continue;
     }
 
@@ -82,7 +81,7 @@ int sys_mprotect(void *addr, size_t len, int prot) {
     *pte = phys | flags;
   }
 
-  // Flush TLB for modified range
+  // TLB flush karo kyunki protection badla hai
   for (size_t i = 0; i < pages; i++) {
     uintptr_t vaddr = start + i * 0x1000;
     asm volatile("invlpg (%0)" : : "r"(vaddr) : "memory");
@@ -107,7 +106,7 @@ int sys_msync(void *addr, size_t length, int flags) {
   (void)length;
   (void)flags;
 
-  // For now, memory is not actually file-backed, so sync is a no-op
+  // Abhi memory file-backed nahi hai, toh sync bas dikhawa hai
   return 0;
 }
 
@@ -145,7 +144,7 @@ int sys_munlock(const void *addr, size_t len) {
 
 int sys_mlockall(int flags) {
   (void)flags;
-  // Lock all pages - simplified
+  // Sab lock kar do - simplified version
   return 0;
 }
 
@@ -164,7 +163,7 @@ int sys_madvise(void *addr, size_t length, int advice) {
   (void)length;
   (void)advice;
 
-  // Memory advice is hints only - just accept and ignore
+  // Advice bas suggestion hai - sun lo aur ignore karo
   return 0;
 }
 
@@ -179,7 +178,7 @@ int sys_posix_memalign(void **memptr, size_t alignment, size_t size) {
   if (!memptr)
     return EINVAL;
 
-  // Alignment must be power of 2 and multiple of sizeof(void*)
+  // Alignment power of 2 aur pointer size ka multiple hona chahiye
   if (alignment < sizeof(void *))
     return EINVAL;
   if (alignment & (alignment - 1))
@@ -190,17 +189,17 @@ int sys_posix_memalign(void **memptr, size_t alignment, size_t size) {
     return 0;
   }
 
-  // Allocate with extra space for alignment
+  // Thoda extra space allot karo alignment ke liye
   size_t total = size + alignment - 1 + sizeof(void *);
   void *raw = kmalloc(total);
   if (!raw)
     return ENOMEM;
 
-  // Align the result
+  // Result ko align karo
   uintptr_t aligned =
       ((uintptr_t)raw + sizeof(void *) + alignment - 1) & ~(alignment - 1);
 
-  // Store original pointer before aligned address
+  // Original pointer ko aligned address se pehle chhupa do
   ((void **)aligned)[-1] = raw;
 
   *memptr = (void *)aligned;

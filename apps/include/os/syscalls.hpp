@@ -143,6 +143,12 @@ static inline int unlink(const char *path) {
   return res;
 }
 
+static inline int mkdir(const char *path, uint32_t mode) {
+  int res;
+  asm volatile("int $0x80" : "=a"(res) : "a"(SYS_MKDIR), "b"(path));
+  return res;
+}
+
 static inline int alarm(uint32_t seconds) {
   int res;
   asm volatile("int $0x80" : "=a"(res) : "a"(SYS_ALARM), "b"(seconds));
@@ -166,6 +172,28 @@ static inline int getppid() {
 static inline int pipe(int *fds) {
   int res;
   asm volatile("int $0x80" : "=a"(res) : "a"(SYS_PIPE), "b"(fds));
+  return res;
+}
+
+static inline int dup2(int oldfd, int newfd) {
+  int res;
+  asm volatile("int $0x80" : "=a"(res) : "a"(SYS_DUP2), "b"(oldfd), "c"(newfd));
+  return res;
+}
+
+static inline int pty_create(int *mfd, int *sfd) {
+  int res;
+  asm volatile("int $0x80"
+               : "=a"(res)
+               : "a"(SYS_PTY_CREATE), "b"(mfd), "c"(sfd));
+  return res;
+}
+
+static inline int ioctl(int fd, uint32_t request, void *arg) {
+  int res;
+  asm volatile("int $0x80"
+               : "=a"(res)
+               : "a"(SYS_IOCTL), "b"(fd), "c"(request), "d"(arg));
   return res;
 }
 

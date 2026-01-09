@@ -19,7 +19,7 @@ extern "C" uint32_t _rodata_end;
 #include "shm.h"
 #include "vm.h"
 
-// Forward declaration to avoid circular include
+// Circular include se bachne ke liye jugad
 typedef struct process process_t;
 extern process_t *current_process;
 
@@ -31,12 +31,13 @@ void page_fault_handler(registers_t *regs) {
   asm volatile("mov %%cr2, %0" : "=r"(faulting_address));
 
   if (handle_demand_paging(faulting_address)) {
-    return; // Fault fixed!
+    return; // Galti sudhar li!
   }
 
   serial_log("PAGE FAULT! Address:");
   serial_log_hex("", faulting_address);
   serial_log_hex("  EIP: ", regs->eip);
+  serial_log_hex("  Error Code: ", regs->err_code);
 
   int us = regs->err_code & 0x4;
   if (us) {
@@ -45,16 +46,35 @@ void page_fault_handler(registers_t *regs) {
     return;
   }
 
-  serial_log("KERNEL PANIC: Page Fault");
+  serial_log("KERNEL PANIC: Page Fault ho gaya");
   for (;;)
     ;
 }
 
 bool handle_demand_paging(uint32_t addr) {
+  // Check if page is already mapped
+  uint32_t *pte = paging_get_pte(addr);
+  if (pte && (*pte & 1)) {
+    // Page is already present - this is a permissions/access violation, not
+    // demand paging Don't allocate, let page fault handler deal with it
+    return false;
+  }
+
+  // 0. Kernel Heap Demand Paging (0xC0000000+)
+  // Only for addresses OUTSIDE the pre-mapped 512MB region
+  if (addr >= 0xE0000000) { // > 512MB virtual = beyond pre-mapped region
+    uint32_t page_base = addr & 0xFFFFF000;
+    uint32_t phys = (uint32_t)pmm_alloc_block();
+    if (!phys)
+      return false;                  // OOM
+    vm_map_page(phys, page_base, 3); // Supervisor | RW | Present
+    return true;
+  }
+
   if (!current_process)
     return false;
 
-  // 1. Check SHM Range (0x70000000 to 0x80000000)
+  // 1. SHM Range check karo (0x70000000 se 0x80000000 tak)
   if (addr >= 0x70000000 && addr < 0x80000000) {
     shm_segment_t *seg = shm_get_segment(addr);
     if (seg) {
@@ -70,17 +90,20 @@ bool handle_demand_paging(uint32_t addr) {
     }
   }
 
-  // 2. Check User Heap Range (0x40000000 up to heap_end)
-  if (addr >= 0x40000000 &&
-      addr < current_process->heap_end + 0x200000) { // Increased grace to 2MB
+  // 2. User Heap check karo (0x40000000 se heap_end tak). Thoda grace (2MB)
+  // diya hai.
+  // Warning: This logic effectively maps ANY user address as heap currently.
+  // Ideally should restrict to current_process->heap_end
+  if (addr >= 0x00400000 &&
+      addr < 0x70000000) { // Restricting slightly to avoid conflicts
     uint32_t page_base = addr & 0xFFFFF000;
     uint32_t phys = (uint32_t)pmm_alloc_block();
-    serial_log_hex("DEMAND: Mapping HEAP at ", addr);
+    serial_log_hex("DEMAND: Mapping USER HEAP at ", addr);
     vm_map_page(phys, page_base, 7);
     return true;
   }
 
-  // 3. Check User Stack Range (near 0xB0000000)
+  // 3. User Stack check karo (0xB0000000 ke paas)
   if (addr >= 0xAF000000 && addr <= 0xB0000000) {
     uint32_t page_base = addr & 0xFFFFF000;
     uint32_t phys = (uint32_t)pmm_alloc_block();
@@ -109,7 +132,7 @@ void paging_map(uint32_t phys, uint32_t virt, uint32_t flags) {
 }
 
 void init_paging() {
-  serial_log("PAGING: Initializing Unified Memory Map...");
+  serial_log("PAGING: Memory map taiyar kar rahe hain...");
 
   uint32_t phys_pd = (uint32_t)pmm_alloc_block();
   kernel_directory = (uint32_t *)PHYS_TO_VIRT(phys_pd);
@@ -136,18 +159,18 @@ void init_paging() {
       virt_pt[i] = phys_addr | flags;
     }
 
-    // 1. Higher-Half Mapping (3GB+)
+    // 1. Higher-Half Mapping (3GB se upar)
     kernel_directory[KERNEL_PAGE_DIRECTORY_INDEX + j] = phys_pt | 3;
 
-    // 2. Identity Mapping (0-512MB) - Required for ACPI and legacy driver
-    // initialization
+    // 2. Identity Mapping (0-512MB) - ACPI aur legacy drivers ke liye zaroori
+    // start mein
     kernel_directory[j] = phys_pt | 3;
   }
 
   register_interrupt_handler(14, page_fault_handler);
 
-  // Note: apic/hpet map uses paging_map which correctly handles virtual
-  // pointers now
+  // Note: apic/hpet map paging_map use karte hain jo ab pointers sahi handle
+  // karta hai
   apic_map_hardware();
   hpet_map_hardware();
 
@@ -165,21 +188,21 @@ void switch_page_directory(uint32_t *dir) {
   asm volatile("mov %0, %%cr0" ::"r"(cr0));
 }
 
-// Get page table entry for a virtual address
+// Virtual address se PTE nikalne ka jugad
 uint32_t *paging_get_pte(uint32_t virt) {
   uint32_t pd_index = virt >> 22;
   uint32_t pt_index = (virt >> 12) & 0x03FF;
 
-  // Get the directory to use
+  // Kaunsa directory use karna hai dekho
   uint32_t *dir = current_directory ? current_directory : kernel_directory;
   if (!dir)
     return 0;
 
-  // Check if page table exists
+  // Check karo page table hai ya nahi
   if (!(dir[pd_index] & 1))
     return 0;
 
-  // Get page table
+  // Page table uthao
   uint32_t *pt = (uint32_t *)PHYS_TO_VIRT(dir[pd_index] & 0xFFFFF000);
   return &pt[pt_index];
 }

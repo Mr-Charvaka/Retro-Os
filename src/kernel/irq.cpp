@@ -7,13 +7,13 @@
 #include "../include/string.h"
 #include "../include/types.h"
 
-
 #include "../drivers/acpi.h"
 #include "apic.h"
 
-// ISRs defined in isr.c or interrupt.asm need to be referenced here
-// but actually we used macros, so let's reference the isr32-47 symbols
+// ISRs define kiye hain lekin hum macros use kar rahe hain
+// Chalo isr32-47 symbols ko reference karte hain
 extern "C" {
+// IRQ ko remap karte hain kyunki CPU exceptions ke saath clash na ho
 void irq_remap() {
   outb(0x20, 0x11);
   outb(0xA0, 0x11);
@@ -26,9 +26,6 @@ void irq_remap() {
   outb(0x21, 0x0);
   outb(0xA1, 0x0);
 }
-
-#include "../drivers/acpi.h"
-#include "apic.h"
 
 void irq_install() {
   acpi_init();
@@ -61,8 +58,7 @@ void irq_install() {
   set_idt_gate(47, (uint32_t)isr47);
 }
 
-// Use a single handler for dispatch
-#include "apic.h"
+// Dispatch ke liye ek single handler
 
 void irq_set_mask(uint8_t irq, bool masked) {
   if (lapic_base) {
@@ -71,10 +67,11 @@ void irq_set_mask(uint8_t irq, bool masked) {
 }
 
 void irq_handler(registers_t *regs) {
-  // Send EOI (End of Interrupt)
+  // EOI (End of Interrupt) bhejna zaroori hai
   if (lapic_base) {
     lapic_eoi();
   } else {
+    // Agar PIC mode mein ho, toh PIC ko batao
     if (regs->int_no >= 40) {
       outb(0xA0, 0x20); // Slave
     }
@@ -86,7 +83,7 @@ void irq_handler(registers_t *regs) {
     handler(regs);
   }
 
-  // Handle signals on return to user mode
+  // User mode mein wapas jaane se pehle signals handle karo
   if ((regs->cs & 3) == 3) {
     handle_signals(regs);
   }

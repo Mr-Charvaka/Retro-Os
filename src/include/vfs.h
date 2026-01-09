@@ -3,92 +3,131 @@
 
 #include "types.h"
 
-#define VFS_FILE 0x01
-#define VFS_DIRECTORY 0x02
-#define VFS_CHARDEVICE 0x03
-#define VFS_BLOCKDEVICE 0x04
-#define VFS_PIPE 0x05
-#define VFS_SYMLINK 0x06
-#define VFS_SOCKET 0x07
-#define VFS_MOUNTPOINT 0x08
+// Phase 1: Real VFS Node Types
+enum vfs_node_type {
+  VFS_FILE,
+  VFS_DIRECTORY,
+  VFS_SYMLINK,
+  VFS_DEVICE,
+  VFS_MOUNTPOINT,
+  VFS_PIPE,
+  VFS_SOCKET
+};
 
-// Open flags
+// Open flags (Legacy Compatible)
 #define O_RDONLY 0x00
 #define O_WRONLY 0x01
 #define O_RDWR 0x02
+#define O_APPEND 0x08
 #define O_CREAT 0x40
 #define O_TRUNC 0x200
+#define O_NONBLOCK 0x800
 
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
+// Forward Declarations
 struct vfs_node;
+struct filesystem;
+struct dirent;
 
-typedef uint32_t (*read_type_t)(struct vfs_node *, uint32_t, uint32_t,
-                                uint8_t *);
-typedef uint32_t (*write_type_t)(struct vfs_node *, uint32_t, uint32_t,
-                                 uint8_t *);
-typedef void (*open_type_t)(struct vfs_node *);
-typedef void (*close_type_t)(struct vfs_node *);
-typedef struct dirent *(*readdir_type_t)(struct vfs_node *, uint32_t);
-typedef struct vfs_node *(*finddir_type_t)(struct vfs_node *, const char *name);
-typedef int (*mkdir_type_t)(struct vfs_node *, const char *name, uint32_t mask);
-typedef int (*unlink_type_t)(struct vfs_node *, const char *name);
-typedef int (*rmdir_type_t)(struct vfs_node *, const char *name);
+// Filesystem Interface (The Contract)
+struct filesystem {
+  const char *name;
 
+  // Core Operations
+  struct vfs_node *(*mount)(struct filesystem *fs, void *device);
+  struct vfs_node *(*lookup)(struct vfs_node *dir, const char *name);
+  int (*create)(struct vfs_node *parent, const char *name, int type);
+
+  // File Operations
+  int (*read)(struct vfs_node *file, uint64_t offset, void *buffer,
+              uint64_t size);
+  int (*write)(struct vfs_node *file, uint64_t offset, const void *buffer,
+               uint64_t size);
+
+  // Management
+  void (*close)(struct vfs_node *node);
+  struct dirent *(*readdir)(struct vfs_node *dir, uint32_t index);
+  int (*mkdir)(struct vfs_node *parent, const char *name, uint32_t mode);
+  int (*unlink)(struct vfs_node *parent, const char *name);
+  int (*rmdir)(struct vfs_node *parent, const char *name);
+  int (*rename)(struct vfs_node *parent, const char *old_name,
+                const char *new_name);
+};
+
+// The VFS Node (The Brain)
 typedef struct vfs_node {
-  char name[128];
-  uint32_t mask;
+  char name[256];
+  enum vfs_node_type type; // vfs_node_type
+
+  uint64_t inode;
+  uint64_t size;
+  uint32_t mask; // Permissions
   uint32_t uid;
   uint32_t gid;
   uint32_t flags;
-  uint32_t inode;
-  uint32_t length;
-  uint32_t impl;      // Implementation-specific value (e.g. cluster number)
-  uint32_t ref_count; // Reference count for shared nodes (e.g. sockets/pipes)
+  uint32_t ref_count;
 
-  read_type_t read;
-  write_type_t write;
-  open_type_t open;
-  close_type_t close;
-  readdir_type_t readdir;
-  finddir_type_t finddir;
-  mkdir_type_t mkdir;
-  unlink_type_t unlink;
-  rmdir_type_t rmdir;
+  struct vfs_node *parent;
+  struct vfs_node *children;     // For cache/RAMFS
+  struct vfs_node *next_sibling; // Linked list
 
-  struct vfs_node *ptr; // For mountpoints
+  struct filesystem *fs; // Which FS owns this node
+  void *impl;            // Private driver data
+
+  // Legacy / Override Pointers (For TTY, Sockets, etc.)
+  uint32_t (*read)(struct vfs_node *, uint32_t, uint32_t, uint8_t *);
+  uint32_t (*write)(struct vfs_node *, uint32_t, uint32_t, uint8_t *);
+  void (*open)(struct vfs_node *);
+  void (*close)(struct vfs_node *);
+  struct dirent *(*readdir)(struct vfs_node *, uint32_t);
+  struct vfs_node *(*finddir)(struct vfs_node *, const char *);
+  int (*mkdir)(struct vfs_node *, const char *, uint32_t);
+  int (*create)(struct vfs_node *, const char *, int); // Added for FAT16 legacy
+  int (*unlink)(struct vfs_node *, const char *);
+  int (*rmdir)(struct vfs_node *, const char *);
+  int (*rename)(struct vfs_node *, const char *, const char *);
+  int (*ioctl)(struct vfs_node *, int, void *);
 } vfs_node_t;
-
-// Redundant types removed as they are in types.h
-
-struct iovec {
-  void *iov_base; /* Starting address */
-  size_t iov_len; /* Number of bytes to transfer */
-};
-
-// Redundant struct stat removed as it is in types.h
-
-// Redundant struct dirent removed as it is in types.h
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+// Global Root
 extern vfs_node_t *vfs_root;
-extern vfs_node_t *vfs_dev;
 
-// High-level API
-uint32_t read_vfs(vfs_node_t *node, uint32_t offset, uint32_t size,
-                  uint8_t *buffer);
-uint32_t write_vfs(vfs_node_t *node, uint32_t offset, uint32_t size,
-                   uint8_t *buffer);
-void open_vfs(vfs_node_t *node, uint8_t read, uint8_t write);
-void close_vfs(vfs_node_t *node);
-struct dirent *readdir_vfs(vfs_node_t *node, uint32_t index);
-vfs_node_t *finddir_vfs(vfs_node_t *node, const char *name);
+// Core VFS API (The new implementation)
+void vfs_init();
+void vfs_mount(const char *path, struct filesystem *fs, void *device);
 vfs_node_t *vfs_resolve_path(const char *path);
-vfs_node_t *vfs_resolve_path_relative(vfs_node_t *root, const char *path);
+vfs_node_t *vfs_resolve_path_relative(vfs_node_t *base, const char *path);
+
+// Operation Wrappers
+int vfs_read(vfs_node_t *node, uint64_t offset, void *buf, uint64_t size);
+int vfs_write(vfs_node_t *node, uint64_t offset, const void *buf,
+              uint64_t size);
+int vfs_create(const char *path, int type);
+int vfs_unlink(const char *path);
+int vfs_rename(const char *oldpath, const char *newpath);
+int vfs_mkdir(const char *path, uint32_t mode); // Helper
+struct dirent *vfs_readdir(vfs_node_t *node, uint32_t index);
+void vfs_close(vfs_node_t *node);
+
+// Node-relative Helpers (Exported for file_ops.cpp & Kernel legacy)
 int mkdir_vfs(vfs_node_t *node, const char *name, uint32_t mask);
 int unlink_vfs(vfs_node_t *node, const char *name);
 int rmdir_vfs(vfs_node_t *node, const char *name);
+struct dirent *readdir_vfs(vfs_node_t *node, uint32_t index);
+extern vfs_node_t *vfs_dev;
+
+// Helpers
+int vfs_is_dir(vfs_node_t *node);
+
+// Phase A Bootstrap
+void fs_phase_a_bootstrap();
 
 #ifdef __cplusplus
 }

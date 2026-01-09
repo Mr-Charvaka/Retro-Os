@@ -34,6 +34,10 @@ typedef struct tty {
 
   // Foreground process group (for signals)
   int fg_pgid;
+
+  // Driver backend pointers
+  int (*write_callback)(struct tty *, const char *, int);
+  void *private_data;
 } tty_t;
 
 #ifdef __cplusplus

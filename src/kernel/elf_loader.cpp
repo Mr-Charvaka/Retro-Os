@@ -13,21 +13,21 @@ uint32_t load_elf(const char *filename, uint32_t *top_address) {
   serial_log("ELF: Loading file via VFS...");
   serial_log(filename);
 
-  vfs_node_t *node = finddir_vfs(vfs_root, (char *)filename);
+  vfs_node_t *node = vfs_resolve_path(filename);
   if (node == 0) {
     serial_log("ELF ERROR: File not found in VFS.");
     return 0;
   }
 
-  uint8_t *buffer = (uint8_t *)kmalloc(node->length + 512);
-  read_vfs(node, 0, node->length, buffer);
+  uint8_t *buffer = (uint8_t *)kmalloc(node->size + 512);
+  vfs_read(node, 0, buffer, node->size);
 
   Elf32_Ehdr *ehdr = (Elf32_Ehdr *)buffer;
 
-  // Validate Magic
+  // Check karo ki Magic sahi hai ya nahi
   if (memcmp(ehdr->e_ident, "\x7f\x45\x4c\x46", 4) != 0) {
     serial_log("ELF ERROR: Invalid Magic.");
-    kfree(buffer); // Good practice
+    kfree(buffer); // Achhi aadat
     return 0;
   }
 
@@ -37,16 +37,16 @@ uint32_t load_elf(const char *filename, uint32_t *top_address) {
 
   uint32_t max_addr = 0;
 
-  // Parse Program Headers
+  // Program Headers ko padho
   Elf32_Phdr *phdr = (Elf32_Phdr *)(buffer + ehdr->e_phoff);
   for (int i = 0; i < ehdr->e_phnum; i++) {
     if (phdr[i].p_type == PT_LOAD) {
       serial_log_hex("ELF: Loading segment at ", phdr[i].p_vaddr);
       serial_log_hex("ELF: Segment size: ", phdr[i].p_memsz);
 
-      // Ensure Pages are mapped!
-      // This is crucial for per-process directories where the user range is
-      // initially empty.
+      // Pages ka map hona zaroori hai!
+      // Ye user processes ke liye bahut important hai jahan shuru mein sab
+      // khali hota hai.
       uint32_t start_addr = phdr[i].p_vaddr;
       uint32_t end_addr = start_addr + phdr[i].p_memsz;
 
@@ -57,19 +57,35 @@ uint32_t load_elf(const char *filename, uint32_t *top_address) {
       uint32_t start_page = start_addr & 0xFFFFF000;
       uint32_t end_page = (end_addr + 0xFFF) & 0xFFFFF000;
 
+      // Map pages (Silent)
       for (uint32_t page = start_page; page < end_page; page += 4096) {
         if (vm_get_phys(page) == 0) {
-          // Allocate new frame and map it
-          // User Mode | RW | Present = 7
-          vm_map_page((uint32_t)pmm_alloc_block(), page, 7);
+          void *phys = pmm_alloc_block();
+          if (!phys) {
+            serial_log("ELF ERROR: PMM allocation failed!");
+            kfree(buffer);
+            return 0;
+          }
+          vm_map_page((uint32_t)phys, page, 7);
         }
       }
 
-      // Safe to copy now
+      // Copy content
       memcpy((void *)phdr[i].p_vaddr, buffer + phdr[i].p_offset,
              phdr[i].p_filesz);
 
-      // Zero out BSS
+      // Verify Entry Point Content
+      if (entry_point >= phdr[i].p_vaddr &&
+          entry_point < phdr[i].p_vaddr + phdr[i].p_memsz) {
+        uint8_t *code = (uint8_t *)entry_point;
+        serial_log("ELF: Code at Entry Point:");
+        serial_log_hex(" [0]: ", code[0]);
+        serial_log_hex(" [1]: ", code[1]);
+        serial_log_hex(" [2]: ", code[2]);
+        serial_log_hex(" [3]: ", code[3]);
+      }
+
+      // Zero BSS
       if (phdr[i].p_memsz > phdr[i].p_filesz) {
         memset((void *)(phdr[i].p_vaddr + phdr[i].p_filesz), 0,
                phdr[i].p_memsz - phdr[i].p_filesz);
@@ -78,11 +94,10 @@ uint32_t load_elf(const char *filename, uint32_t *top_address) {
   }
 
   if (top_address) {
-    // Align to next page boundary for safety
     *top_address = (max_addr + 0xFFF) & 0xFFFFF000;
   }
 
-  kfree(buffer); // Clean up
+  kfree(buffer);
   serial_log_hex("ELF: Returning entry point ", entry_point);
   return entry_point;
 }

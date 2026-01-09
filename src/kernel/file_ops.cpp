@@ -1,6 +1,6 @@
 // ============================================================================
-// file_ops.cpp - Extended POSIX File Operations
-// Entirely hand-crafted for Retro-OS kernel
+// file_ops.cpp - Extended POSIX File Operations ka pitara
+// Apne Retro-OS kernel ke liye hand-crafted logic
 // ============================================================================
 
 #include "../drivers/serial.h"
@@ -12,16 +12,15 @@
 #include "memory.h"
 #include "process.h"
 
-
 extern "C" {
 
 // ============================================================================
-// File Position Tracking (per file descriptor)
+// File Position Tracking (Har file descriptor ke liye)
 // ============================================================================
-static uint32_t fd_positions[256]; // Simplified: global tracking
+// Removed: static uint32_t fd_positions[256];
 
 // ============================================================================
-// sys_pread - Read from file at offset without changing position
+// sys_pread - Offset se padho bina position change kiye
 // ============================================================================
 
 ssize_t sys_pread(int fd, void *buf, size_t count, off_t offset) {
@@ -31,16 +30,12 @@ ssize_t sys_pread(int fd, void *buf, size_t count, off_t offset) {
   if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
     return -EBADF;
 
-  vfs_node_t *node = current_process->fd_table[fd];
-  if (!node->read)
-    return -EINVAL;
-
-  return (ssize_t)node->read(node, (uint32_t)offset, (uint32_t)count,
-                             (uint8_t *)buf);
+  file_description_t *desc = current_process->fd_table[fd];
+  return (ssize_t)vfs_read(desc->node, (uint64_t)offset, buf, (uint64_t)count);
 }
 
 // ============================================================================
-// sys_pwrite - Write to file at offset without changing position
+// sys_pwrite - Offset pe likho bina position change kiye
 // ============================================================================
 
 ssize_t sys_pwrite(int fd, const void *buf, size_t count, off_t offset) {
@@ -50,26 +45,19 @@ ssize_t sys_pwrite(int fd, const void *buf, size_t count, off_t offset) {
   if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
     return -EBADF;
 
-  vfs_node_t *node = current_process->fd_table[fd];
-  if (!node->write)
-    return -EINVAL;
-
-  return (ssize_t)node->write(node, (uint32_t)offset, (uint32_t)count,
-                              (uint8_t *)buf);
+  file_description_t *desc = current_process->fd_table[fd];
+  return (ssize_t)vfs_write(desc->node, (uint64_t)offset, buf, (uint64_t)count);
 }
 
 // ============================================================================
-// sys_lseek - Reposition read/write file offset
+// sys_lseek - File offset ko aage peeche karo
 // ============================================================================
 
 off_t sys_lseek(int fd, off_t offset, int whence) {
   if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
     return -EBADF;
 
-  vfs_node_t *node = current_process->fd_table[fd];
-
-  // Get current position
-  uint32_t current_pos = fd_positions[fd];
+  file_description_t *desc = current_process->fd_table[fd];
   uint32_t new_pos;
 
   switch (whence) {
@@ -77,10 +65,10 @@ off_t sys_lseek(int fd, off_t offset, int whence) {
     new_pos = offset;
     break;
   case SEEK_CUR:
-    new_pos = current_pos + offset;
+    new_pos = desc->offset + offset;
     break;
   case SEEK_END:
-    new_pos = node->length + offset;
+    new_pos = desc->node->size + offset;
     break;
   default:
     return -EINVAL;
@@ -90,12 +78,12 @@ off_t sys_lseek(int fd, off_t offset, int whence) {
   if ((int32_t)new_pos < 0)
     return -EINVAL;
 
-  fd_positions[fd] = new_pos;
+  desc->offset = new_pos;
   return (off_t)new_pos;
 }
 
 // ============================================================================
-// sys_truncate - Truncate a file to specified length
+// sys_truncate - File ko kaat ke chota karo
 // ============================================================================
 
 int sys_truncate(const char *path, off_t length) {
@@ -111,7 +99,7 @@ int sys_truncate(const char *path, off_t length) {
   if ((node->flags & 0x7) != VFS_FILE)
     return -EISDIR;
 
-  node->length = (uint32_t)length;
+  node->size = (uint32_t)length;
   return 0;
 }
 
@@ -123,11 +111,12 @@ int sys_ftruncate(int fd, off_t length) {
   if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
     return -EBADF;
 
-  vfs_node_t *node = current_process->fd_table[fd];
+  file_description_t *desc = current_process->fd_table[fd];
+  vfs_node_t *node = desc->node;
   if ((node->flags & 0x7) != VFS_FILE)
     return -EINVAL;
 
-  node->length = (uint32_t)length;
+  node->size = (uint32_t)length;
   return 0;
 }
 
@@ -144,9 +133,9 @@ int sys_link(const char *oldpath, const char *newpath) {
   if (!src)
     return -ENOENT;
 
-  // Hard links not fully supported in our simple VFS
-  // Return stub error
-  serial_log("LINK: Hard links not implemented");
+  // Hard links abhi fully implemented nahi hain
+  // Error return kar rahe hain
+  serial_log("LINK: Hard links abhi nahi chalenge");
   return -ENOSYS;
 }
 
@@ -185,8 +174,8 @@ int sys_symlink(const char *target, const char *linkpath) {
   if (!parent_node)
     return -ENOENT;
 
-  // Symbolic links not fully implemented
-  serial_log("SYMLINK: Symbolic links not implemented");
+  // Symbolic links abhi poore nahi bane hain
+  serial_log("SYMLINK: Symbolic links ka kaam baaki hai");
   return -ENOSYS;
 }
 
@@ -205,8 +194,8 @@ ssize_t sys_readlink(const char *pathname, char *buf, size_t bufsiz) {
   if ((node->flags & 0x7) != VFS_SYMLINK)
     return -EINVAL;
 
-  // In a real implementation, we'd read the symlink target
-  // For now, return not implemented
+  // Asli OS mein hum symlink target padhte
+  // Abhi ke liye not implemented
   return -ENOSYS;
 }
 
@@ -218,7 +207,7 @@ int sys_lstat(const char *pathname, struct stat *statbuf) {
   if (!pathname || !statbuf)
     return -EFAULT;
 
-  // For now, identical to stat (we don't chase symlinks yet)
+  // Abhi ke liye stat jaisa hi hai (symlink chase nahi karte)
   vfs_node_t *node = vfs_resolve_path(pathname);
   if (!node)
     return -ENOENT;
@@ -228,18 +217,16 @@ int sys_lstat(const char *pathname, struct stat *statbuf) {
   statbuf->st_mode = node->mask;
 
   // Set file type bits
-  switch (node->flags & 0x7) {
+  switch (node->type) {
   case VFS_FILE:
     statbuf->st_mode |= S_IFREG;
     break;
   case VFS_DIRECTORY:
+  case VFS_MOUNTPOINT:
     statbuf->st_mode |= S_IFDIR;
     break;
-  case VFS_CHARDEVICE:
+  case VFS_DEVICE:
     statbuf->st_mode |= S_IFCHR;
-    break;
-  case VFS_BLOCKDEVICE:
-    statbuf->st_mode |= S_IFBLK;
     break;
   case VFS_PIPE:
     statbuf->st_mode |= S_IFIFO;
@@ -256,12 +243,12 @@ int sys_lstat(const char *pathname, struct stat *statbuf) {
   statbuf->st_uid = node->uid;
   statbuf->st_gid = node->gid;
   statbuf->st_rdev = 0;
-  statbuf->st_size = node->length;
+  statbuf->st_size = node->size;
   statbuf->st_atime = 0;
   statbuf->st_mtime = 0;
   statbuf->st_ctime = 0;
   statbuf->st_blksize = 512;
-  statbuf->st_blocks = (node->length + 511) / 512;
+  statbuf->st_blocks = (node->size + 511) / 512;
 
   return 0;
 }
@@ -279,7 +266,7 @@ int sys_mkdirat(int dirfd, const char *pathname, uint32_t mode) {
     base = vfs_root;
   } else if (dirfd >= 0 && dirfd < MAX_PROCESS_FILES &&
              current_process->fd_table[dirfd]) {
-    base = current_process->fd_table[dirfd];
+    base = current_process->fd_table[dirfd]->node;
   } else {
     return -EBADF;
   }
@@ -292,7 +279,7 @@ int sys_mkdirat(int dirfd, const char *pathname, uint32_t mode) {
     return -EEXIST;
   }
 
-  // Create directory (use VFS mkdir)
+  // Directory banao (VFS mkdir use karke)
   return mkdir_vfs(base, pathname, mode);
 }
 
@@ -309,7 +296,7 @@ int sys_unlinkat(int dirfd, const char *pathname, int flags) {
     base = vfs_root;
   } else if (dirfd >= 0 && dirfd < MAX_PROCESS_FILES &&
              current_process->fd_table[dirfd]) {
-    base = current_process->fd_table[dirfd];
+    base = current_process->fd_table[dirfd]->node;
   } else {
     return -EBADF;
   }
@@ -331,16 +318,20 @@ int sys_renameat(int olddirfd, const char *oldpath, int newdirfd,
     return -EFAULT;
 
   // Simplified: only support same-directory renames
-  vfs_node_t *old_base = (olddirfd == AT_FDCWD)
-                             ? vfs_root
-                             : ((olddirfd >= 0 && olddirfd < MAX_PROCESS_FILES)
-                                    ? current_process->fd_table[olddirfd]
-                                    : 0);
-  vfs_node_t *new_base = (newdirfd == AT_FDCWD)
-                             ? vfs_root
-                             : ((newdirfd >= 0 && newdirfd < MAX_PROCESS_FILES)
-                                    ? current_process->fd_table[newdirfd]
-                                    : 0);
+  vfs_node_t *old_base =
+      (olddirfd == AT_FDCWD)
+          ? vfs_root
+          : ((olddirfd >= 0 && olddirfd < MAX_PROCESS_FILES &&
+              current_process->fd_table[olddirfd])
+                 ? current_process->fd_table[olddirfd]->node
+                 : 0);
+  vfs_node_t *new_base =
+      (newdirfd == AT_FDCWD)
+          ? vfs_root
+          : ((newdirfd >= 0 && newdirfd < MAX_PROCESS_FILES &&
+              current_process->fd_table[newdirfd])
+                 ? current_process->fd_table[newdirfd]->node
+                 : 0);
 
   if (!old_base || !new_base)
     return -EBADF;
@@ -379,12 +370,12 @@ int sys_fchmod(int fd, uint32_t mode) {
   if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
     return -EBADF;
 
-  current_process->fd_table[fd]->mask = mode;
+  current_process->fd_table[fd]->node->mask = mode;
   return 0;
 }
 
 // ============================================================================
-// sys_chown - Change file ownership
+// sys_chown - Maalik badlo
 // ============================================================================
 
 int sys_chown(const char *pathname, uint32_t owner, uint32_t group) {
@@ -409,8 +400,8 @@ int sys_fchown(int fd, uint32_t owner, uint32_t group) {
   if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
     return -EBADF;
 
-  current_process->fd_table[fd]->uid = owner;
-  current_process->fd_table[fd]->gid = group;
+  current_process->fd_table[fd]->node->uid = owner;
+  current_process->fd_table[fd]->node->gid = group;
   return 0;
 }
 
@@ -425,10 +416,12 @@ int sys_fcntl(int fd, int cmd, int arg) {
   if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
     return -EBADF;
 
+  file_description_t *desc = current_process->fd_table[fd];
+
   switch (cmd) {
   case F_DUPFD:
   case F_DUPFD_CLOEXEC: {
-    // Find first available fd >= arg
+    // Pehla available fd dhundo jo >= arg ho
     for (int i = arg; i < MAX_PROCESS_FILES; i++) {
       if (!current_process->fd_table[i]) {
         current_process->fd_table[i] = current_process->fd_table[fd];
@@ -449,12 +442,11 @@ int sys_fcntl(int fd, int cmd, int arg) {
     return 0;
 
   case F_GETFL:
-    // Return open flags (simplified - we don't track these)
-    return O_RDWR;
+    return desc->flags;
 
   case F_SETFL:
-    // Set file status flags (simplified - O_APPEND, O_NONBLOCK, etc.)
-    // Not fully implemented
+    // arg is typically int for flags
+    desc->flags = (desc->flags & ~0x800) | (arg & 0x800); // 0x800 = O_NONBLOCK
     return 0;
 
   case F_GETOWN:
@@ -481,7 +473,8 @@ int sys_ioctl(int fd, unsigned long request, void *argp) {
   if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
     return -EBADF;
 
-  vfs_node_t *node = current_process->fd_table[fd];
+  file_description_t *desc = current_process->fd_table[fd];
+  vfs_node_t *node = desc->node;
 
   switch (request) {
   case TIOCGWINSZ: {
@@ -499,7 +492,7 @@ int sys_ioctl(int fd, unsigned long request, void *argp) {
   case FIONREAD: {
     // Return bytes available
     if (argp) {
-      *(int *)argp = node->length - fd_positions[fd];
+      *(int *)argp = node->size - desc->offset;
     }
     return 0;
   }
@@ -510,7 +503,8 @@ int sys_ioctl(int fd, unsigned long request, void *argp) {
   }
 
   default:
-    // Unknown ioctl - might be handled by driver
+    if (node->ioctl)
+      return node->ioctl(node, request, argp);
     return -ENOTTY;
   }
 }
@@ -523,7 +517,7 @@ int sys_fchdir(int fd) {
   if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
     return -EBADF;
 
-  vfs_node_t *node = current_process->fd_table[fd];
+  vfs_node_t *node = current_process->fd_table[fd]->node;
   if ((node->flags & 0x7) != VFS_DIRECTORY)
     return -ENOTDIR;
 
@@ -570,7 +564,7 @@ int sys_faccessat(int dirfd, const char *pathname, int mode, int flags) {
     base = vfs_root;
   } else if (dirfd >= 0 && dirfd < MAX_PROCESS_FILES &&
              current_process->fd_table[dirfd]) {
-    base = current_process->fd_table[dirfd];
+    base = current_process->fd_table[dirfd]->node;
   } else {
     return -EBADF;
   }

@@ -1,27 +1,26 @@
 # Build artifacts
 *.o
 *.bin
-*.elf
+*.iso
+*.iso.bin
 *.img
-*.map
+*.elf
+*.a
+*.d
 
 # Logs
 *.log
-debug.log
-serial*.log
-qemu*.log
+*.txt
+serial.log
+qemu.log
+qemu_log.txt
 system_check.log
-build_log.txt
 
-# Test files
-test.txt
-
-# Editor/IDE files
+# IDEs
 .vscode/
-*.swp
-*.swo
-*~
+.idea/
 
-# Python cache
-__pycache__/
-*.pyc
+# OS specific
+TRUTH.DAT
+build/
+bin/

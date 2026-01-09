@@ -1,6 +1,6 @@
 // ============================================================================
-// signal.cpp - POSIX Signal Implementation
-// Entirely hand-crafted for Retro-OS kernel
+// signal.cpp - POSIX Signal Implementation ka poora kissa
+// Apne Retro-OS kernel ke liye hand-crafted logic
 // ============================================================================
 
 #include "../include/signal.h"
@@ -9,14 +9,13 @@
 #include "heap.h"
 #include "process.h"
 
-
 extern "C" {
 
 // Global tick counter (from timer.cpp)
 extern uint32_t tick;
 
 // ============================================================================
-// Signal Set Manipulation Functions
+// Signal Set ke saath chhed-chhad karne waale functions
 // ============================================================================
 
 int sigemptyset(sigset_t *set) {
@@ -54,21 +53,21 @@ int sigismember(const sigset_t *set, int signum) {
 }
 
 // ============================================================================
-// sys_signal - Simple signal handler registration (legacy)
+// sys_signal - Purana tareeka signal handler register karne ka
 // ============================================================================
 
 int sys_signal(int signum, sighandler_t handler) {
   if (signum < 1 || signum >= NSIG)
     return -EINVAL;
 
-  // SIGKILL and SIGSTOP cannot be caught or ignored
+  // SIGKILL aur SIGSTOP ko koi nahi rok sakta, na ignore kar sakta hai
   if (signum == SIGKILL || signum == SIGSTOP)
     return -EINVAL;
 
   if (!current_process)
     return -ESRCH;
 
-  // Store handler in process signal_actions array
+  // Process ke signal_actions array mein handler chhupa do
   struct sigaction *sa = &current_process->signal_actions[signum];
   sa->sa_handler = handler;
   sa->sa_mask = 0;
@@ -79,7 +78,7 @@ int sys_signal(int signum, sighandler_t handler) {
 }
 
 // ============================================================================
-// sys_sigaction - Detailed signal management
+// sys_sigaction - Signal ka poora control yahan hai
 // ============================================================================
 
 int sys_sigaction(int signum, const struct sigaction *act,
@@ -96,7 +95,7 @@ int sys_sigaction(int signum, const struct sigaction *act,
 
   struct sigaction *current_sa = &current_process->signal_actions[signum];
 
-  // Return old action if requested
+  // Purana action chahiye toh wapas kar do
   if (oldact) {
     oldact->sa_handler = current_sa->sa_handler;
     oldact->sa_mask = current_sa->sa_mask;
@@ -104,7 +103,7 @@ int sys_sigaction(int signum, const struct sigaction *act,
     oldact->sa_restorer = current_sa->sa_restorer;
   }
 
-  // Set new action if provided
+  // Naya action set karo agar diya hai toh
   if (act) {
     current_sa->sa_handler = act->sa_handler;
     current_sa->sa_mask = act->sa_mask;
@@ -142,7 +141,7 @@ int sys_sigprocmask(int how, const sigset_t *set, sigset_t *oldset) {
     default:
       return -EINVAL;
     }
-    // SIGKILL and SIGSTOP cannot be blocked
+    // SIGKILL aur SIGSTOP ko block karne ki koshish mat karna!
     current_process->signal_mask &= ~((sigset_t)1 << SIGKILL);
     current_process->signal_mask &= ~((sigset_t)1 << SIGSTOP);
   }
@@ -185,7 +184,7 @@ int sys_sigsuspend(const sigset_t *mask) {
   current_process->signal_mask &= ~((sigset_t)1 << SIGKILL);
   current_process->signal_mask &= ~((sigset_t)1 << SIGSTOP);
 
-  // Wait for any unblocked signal
+  // Jab tak koi unblocked signal nahi aata, sula do
   while (!(current_process->pending_signals & ~current_process->signal_mask)) {
     current_process->state = PROCESS_WAITING;
     schedule();
@@ -280,14 +279,14 @@ int sys_sigtimedwait(const sigset_t *set, siginfo_t *info,
 }
 
 // ============================================================================
-// sys_kill - Send signal to a process
+// sys_kill - Kisi process ko goli maro (signal bhejo)
 // ============================================================================
 
 int sys_kill(int pid, int signum) {
   if (signum < 0 || signum >= NSIG)
     return -EINVAL;
 
-  // Signal 0 is used to check if process exists (no signal sent)
+  // Signal 0 matlab sirf check karna hai ki process zinda hai ya nahi
   bool signal_zero = (signum == 0);
 
   // Handle special pid values
@@ -298,7 +297,7 @@ int sys_kill(int pid, int signum) {
   }
 
   if (pid == -1) {
-    // Send to all processes (except init and self)
+    // Sabko signal bhejo (khud ko aur init ko chhod ke)
     process_t *p = ready_queue;
     if (!p)
       return -ESRCH;
@@ -310,7 +309,7 @@ int sys_kill(int pid, int signum) {
         if (!signal_zero)
           p->pending_signals |= ((sigset_t)1 << signum);
         found = true;
-        // Wake if waiting
+        // Agar soya hua hai toh jagao
         if (p->state == PROCESS_WAITING)
           p->state = PROCESS_READY;
       }
@@ -364,7 +363,7 @@ int sys_kill(int pid, int signum) {
 }
 
 // ============================================================================
-// sys_pause - Suspend until signal
+// sys_pause - Signal aane tak thand rakho (suspend)
 // ============================================================================
 
 int sys_pause(void) {
@@ -381,7 +380,7 @@ int sys_pause(void) {
 }
 
 // ============================================================================
-// sys_abort - Abort process (send SIGABRT to self)
+// sys_abort - Process ki bali chadhao (SIGABRT khud ko)
 // ============================================================================
 
 int sys_abort(void) {
@@ -393,7 +392,7 @@ int sys_abort(void) {
 }
 
 // ============================================================================
-// kernel_sigreturn - Return from signal handler
+// kernel_sigreturn - Signal handler se wapsi ka rasta
 // ============================================================================
 
 int kernel_sigreturn(registers_t *regs) {
@@ -408,7 +407,7 @@ int kernel_sigreturn(registers_t *regs) {
 }
 
 // ============================================================================
-// handle_signals - Called before returning to userspace
+// handle_signals - Userspace jaane se pehle check maaro
 // ============================================================================
 
 void handle_signals(registers_t *regs) {
@@ -427,7 +426,7 @@ void handle_signals(registers_t *regs) {
   if (deliverable == 0)
     return;
 
-  // Find highest-priority signal to deliver
+  // Delivery ke liye sabse important signal dhoondo
   for (int sig = 1; sig < NSIG; sig++) {
     if (!(deliverable & ((sigset_t)1 << sig)))
       continue;
@@ -468,7 +467,7 @@ void handle_signals(registers_t *regs) {
         return;
       }
     } else {
-      // Custom handler - setup signal trampoline
+      // Custom handler - User ki stack pe tamasha shuru karo (trampoline setup)
       current_process->saved_context = *regs;
       current_process->in_signal_handler = 1;
 
@@ -478,10 +477,10 @@ void handle_signals(registers_t *regs) {
       }
       current_process->signal_mask |= sa->sa_mask;
 
-      // Setup user stack for signal handler call
+      // User stack setup karo handler call ke liye
       uint32_t *stack = (uint32_t *)(uintptr_t)regs->useresp;
 
-      // Push return address (should call sigreturn)
+      // Return address push karo (taki sigreturn call ho sake)
       stack--;
       *stack = 0xDEADC0DE; // Indicates need for sigreturn syscall
 
@@ -492,14 +491,14 @@ void handle_signals(registers_t *regs) {
       // Update stack pointer
       regs->useresp = (uint32_t)(uintptr_t)stack;
 
-      // Jump to handler
+      // Handler pe jump maaro
       regs->eip = (uint32_t)(uintptr_t)handler;
 
       // Reset handler to default if SA_RESETHAND set
       if (sa->sa_flags & SA_RESETHAND)
         sa->sa_handler = SIG_DFL;
 
-      // Only deliver one signal per interrupt
+      // Ek baar mein ek hi signal deliver karenge
       return;
     }
   }
@@ -509,6 +508,6 @@ void handle_signals(registers_t *regs) {
 // signal_init - Initialize signal subsystem
 // ============================================================================
 
-void signal_init(void) { serial_log("SIGNAL: Subsystem initialized"); }
+void signal_init(void) { serial_log("SIGNAL: Subsystem taiyar hai"); }
 
 } // extern "C"

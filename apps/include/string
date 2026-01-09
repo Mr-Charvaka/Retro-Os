@@ -1,0 +1,8 @@
+#pragma once
+#include <Std/String.h>
+#include <Std/Forward.h>
+namespace std {
+    using string = Std::String;
+    using Std::move;
+    using Std::to_string;
+}

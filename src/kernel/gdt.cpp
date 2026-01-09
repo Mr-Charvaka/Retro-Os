@@ -35,9 +35,8 @@ void write_tss(int32_t num, uint16_t ss0, uint32_t esp0) {
   tss_entry.ss0 = ss0;
   tss_entry.esp0 = esp0;
 
-  // Set the CS, DS, ES, FS, GS and SS segments that the CPU will load on
-  // jumping to user mode. We set them to current segments + offset 3 (for Ring
-  // 3).
+  // CS, DS, ES, FS, GS, SS set karo jo CPU user mode mein jump karte waqt load
+  // karega Hum unhe current segments + 3 (Ring 3 ke liye) pe set karte hain
   tss_entry.cs = 0x0b;
   tss_entry.ss = tss_entry.ds = tss_entry.es = tss_entry.fs = tss_entry.gs =
       0x13;
@@ -48,18 +47,18 @@ void init_gdt() {
   gdt_ptr.limit = (sizeof(gdt_entry_t) * 6) - 1;
   gdt_ptr.base = (uint32_t)&gdt_entries;
 
-  gdt_set_gate(0, 0, 0, 0, 0);                // Null segment
-  gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF); // Code segment (Ring 0)
-  gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF); // Data segment (Ring 0)
-  gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF); // User mode code segment
-  gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); // User mode data segment
+  gdt_set_gate(0, 0, 0, 0, 0);                // Null segment (Kuch nahi)
+  gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF); // Code segment (Ring 0 - Kernel)
+  gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF); // Data segment (Ring 0 - Kernel)
+  gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF); // User mode code segment (Ring 3)
+  gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); // User mode data segment (Ring 3)
 
-  write_tss(5, 0x10, 0x0); // TSS
+  write_tss(5, 0x10, 0x0); // TSS (Task State Segment)
 
   gdt_flush((uint32_t)&gdt_ptr);
   tss_flush();
 
-  serial_log("GDT: Initialized with User Segments & TSS.");
+  serial_log("GDT: Sab set hai. User Segments aur TSS taiyar.");
 }
 
 void set_kernel_stack(uint32_t stack) { tss_entry.esp0 = stack; }

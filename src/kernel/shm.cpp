@@ -1,4 +1,4 @@
-// Shared Memory - Implementation
+// Shared Memory - Mil-baat ke memory use karne ka jugad
 #include "shm.h"
 #include "../drivers/serial.h"
 #include "../include/string.h"
@@ -17,22 +17,20 @@ void shm_init() {
     shm_segments[i].in_use = 0;
     shm_segments[i].ref_count = 0;
   }
-  serial_log("SHM: Initialized.");
+  serial_log("SHM: Sab set hai.");
 }
 
 int sys_shmget(uint32_t key, uint32_t size, int flags) {
   (void)flags;
 
-  // Check if segment with this key already exists (if not IPC_PRIVATE)
-  if (key != IPC_PRIVATE) {
-    for (int i = 0; i < SHM_MAX_SEGMENTS; i++) {
-      if (shm_segments[i].in_use && shm_segments[i].key == key) {
-        return i;
-      }
+  // Dekho agar is key ka segment pehle se bana hai kya
+  for (int i = 0; i < SHM_MAX_SEGMENTS; i++) {
+    if (shm_segments[i].in_use && shm_segments[i].key == key) {
+      return i;
     }
   }
 
-  // Find free slot
+  // Koi khali slot dhundo
   int slot = -1;
   for (int i = 0; i < SHM_MAX_SEGMENTS; i++) {
     if (!shm_segments[i].in_use) {
@@ -44,20 +42,20 @@ int sys_shmget(uint32_t key, uint32_t size, int flags) {
   if (slot < 0)
     return -1;
 
-  // ALWAYS ALLOCATE 4MB MINIMUM to allow for window resizing
+  // Window resize wagera ke liye kam se kam 4MB toh chahiye hi
   uint32_t min_size = 4 * 1024 * 1024; // 4MB
   uint32_t final_size = (size > min_size) ? size : min_size;
 
   uint32_t pages = (final_size + SHM_PAGE_SIZE - 1) / SHM_PAGE_SIZE;
 
-  // Allocate contiguous physical pages
+  // Physical pages mangwao system se
   void *phys = pmm_alloc_contiguous_blocks(pages);
   if (!phys) {
-    serial_log("SHM ERROR: Failed to allocate contiguous memory");
+    serial_log("SHM ERROR: Memory nahi mil rahi contiguous!");
     return -1;
   }
 
-  // Initialize segment
+  // Segment ko initialize karo
   shm_segments[slot].key = key;
   shm_segments[slot].size = final_size;
   shm_segments[slot].phys_addr = phys;
@@ -76,7 +74,7 @@ void shm_free(int shmid) {
 
   shm_segment_t *seg = &shm_segments[shmid];
 
-  // Free physical memory
+  // Physical memory wapas kar do
   uint32_t pages = (seg->size + SHM_PAGE_SIZE - 1) / SHM_PAGE_SIZE;
   pmm_free_contiguous_blocks(seg->phys_addr, pages);
 
@@ -94,12 +92,13 @@ void *sys_shmat(int shmid) {
 
   shm_segment_t *seg = &shm_segments[shmid];
 
-  // FIXED MAPPING: Every segment has a reserved 8MB slot in the 0x70000000
-  // range This ensures pointers are interchangeable between all processes.
+  // FIXED MAPPING: Har segment ke liye 0x70000000 range mein 8MB ki jagah fix
+  // hai. Isse pointers sabhi processes ke beech interchange ho sakte hain bina
+  // tension ke.
   uint32_t virt = 0x70000000 + (shmid * 0x800000);
-  seg->virt_start = virt; // Still set for documentation/lookup
+  seg->virt_start = virt; // Documentation aur lookup ke liye set kar liya
 
-  // Map physical pages to virtual address
+  // Physical pages ko virtual address pe map karo
   uint32_t phys = (uint32_t)(uintptr_t)seg->phys_addr;
   uint32_t num_pages = (seg->size + 4095) / SHM_PAGE_SIZE;
 

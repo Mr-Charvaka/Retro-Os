@@ -2,7 +2,7 @@
 #include "../drivers/serial.h"
 #include "../include/string.h"
 
-// 32 blocks per uint32_t
+// Ek uint32_t mein 32 blocks fit hote hain
 #define BLOCKS_PER_UINT32 32
 
 static uint32_t *pmm_bitmap = 0;
@@ -10,23 +10,23 @@ static uint32_t pmm_mem_size = 0;
 static uint32_t pmm_max_blocks = 0;
 static uint32_t pmm_used_blocks = 0;
 
-// Set bit in map
+// Bitmap mein bit set karo (Used mark karo)
 static inline void mmap_set(int bit) {
   pmm_bitmap[bit / 32] |= (1 << (bit % 32));
 }
 
-// Unset bit in map
+// Bitmap mein bit unset karo (Free mark karo)
 static inline void mmap_unset(int bit) {
   pmm_bitmap[bit / 32] &= ~(1 << (bit % 32));
 }
 
-// Test bit in map
+// Check karo ki bit set hai ya nahi
 static inline int mmap_test(int bit) {
   return pmm_bitmap[bit / 32] & (1 << (bit % 32));
 }
 
-// Find first free block
-// Returns -1 if no free blocks
+// Pehla free block dhundo jiska bit 0 ho
+// Agar sab full hai toh -1 wapas karo
 static int mmap_first_free() {
   for (uint32_t i = 0; i < pmm_max_blocks / 32; i++) {
     if (pmm_bitmap[i] != 0xFFFFFFFF) {
@@ -44,16 +44,21 @@ void pmm_init(uint32_t mem_size, uint32_t *bitmap) {
   pmm_mem_size = mem_size;
   pmm_bitmap = bitmap;
   pmm_max_blocks = (mem_size / PMM_BLOCK_SIZE);
-  pmm_used_blocks = pmm_max_blocks; // Initially mark all as used
+  pmm_used_blocks =
+      pmm_max_blocks; // Shuru mein safe side ke liye sab used maano
 
   uint32_t bitmap_size = pmm_max_blocks / 8;
-  memset((uint8_t *)pmm_bitmap, 0, bitmap_size); // Clear bitmap (0 = free)
+  memset((uint8_t *)pmm_bitmap, 0,
+         bitmap_size); // Ab bitmap saaf karo (0 = free)
   pmm_used_blocks = 0;
 
-  serial_log("PMM: Initialized Bitmap.");
+  serial_log("PMM: Bitmap taiyar hai.");
   serial_log_hex("  Mem Size:  ", mem_size);
   serial_log_hex("  Blocks:    ", pmm_max_blocks);
-  serial_log_hex("  Bitmap at: ", (uint32_t)bitmap);
+  serial_log_hex("  Bitmap at: ", (uint32_t)(uintptr_t)bitmap);
+  serial_log_hex("  Used:      ", pmm_used_blocks);
+  serial_log_hex("  Free:      ", pmm_max_blocks - pmm_used_blocks);
+  serial_log_hex("  UsedAddr:  ", (uint32_t)(uintptr_t)&pmm_used_blocks);
 }
 
 void pmm_mark_region_used(uint32_t base, uint32_t size) {
@@ -87,19 +92,29 @@ void pmm_mark_region_free(uint32_t base, uint32_t size) {
 }
 
 void *pmm_alloc_block() {
-  if (pmm_get_free_block_count() <= 0) {
+  static uint32_t alloc_count = 0;
+
+  uint32_t free_count = pmm_get_free_block_count();
+  if (free_count <= 0) {
     serial_log("PMM: Out of Memory!");
+    serial_log_hex("  Used:  ", pmm_used_blocks);
+    serial_log_hex("  Max:   ", pmm_max_blocks);
+    serial_log_hex("  Allocs:", alloc_count);
     return 0;
   }
 
   int frame = mmap_first_free();
   if (frame == -1) {
     serial_log("PMM: Out of Memory (Verify)!");
+    serial_log_hex("  Used: ", pmm_used_blocks);
+    serial_log_hex("  Max:  ", pmm_max_blocks);
+    serial_log_hex("  BMap: ", (uint32_t)pmm_bitmap);
     return 0;
   }
 
   mmap_set(frame);
   pmm_used_blocks++;
+  alloc_count++;
 
   uint32_t addr = frame * PMM_BLOCK_SIZE;
   return (void *)addr;
@@ -120,7 +135,7 @@ void *pmm_alloc_contiguous_blocks(uint32_t count) {
         start_frame = i;
       consecutive++;
       if (consecutive == count) {
-        // Found it
+        // Mil gaya continuous chunk!
         for (uint32_t k = 0; k < count; k++) {
           mmap_set(start_frame + k);
         }

@@ -10,16 +10,16 @@ int slab_is_initialized = 0;
 
 extern uint32_t *kernel_directory;
 
-// Helper to expand heap
+// Heap badhane ka jugad
 void expand_unix_heap(uint32_t new_size) {
-  // For now, we assume fixed size heap at init.
-  // Dynamic expansion requires page allocation which we'll add later.
-  serial_log("HEAP: Use fixed size for now.");
+  // Abhi toh fixed size hi hai
+  // Dynamic expansion baad mein dekhenge
+  serial_log("HEAP: Abhi fixed size hi chalne do.");
 }
 
 void init_kheap(uint32_t start, uint32_t end, uint32_t max) {
   if (start % 4096 != 0 || end % 4096 != 0) {
-    serial_log("HEAP: Addresses must be page aligned!");
+    serial_log("HEAP: Page align karo bhai, aise nahi chalega!");
     return;
   }
 
@@ -37,7 +37,7 @@ void init_kheap(uint32_t start, uint32_t end, uint32_t max) {
 void *kmalloc_real(uint32_t size, int align, uint32_t *phys) {
   cli();
 
-  // Try Slab Allocator first (if initialized, size small, and NOT aligned)
+  // Pehle Slab Allocator check karo (agar chhota size hai)
   if (slab_is_initialized && size <= 2048 && !align) {
     void *ptr = slab_alloc(size);
     if (ptr) {
@@ -53,9 +53,8 @@ void *kmalloc_real(uint32_t size, int align, uint32_t *phys) {
     return 0;
   }
 
-  // Use Buddy Allocator
-  // We need space for: header + possible padding for alignment + 4 bytes for
-  // header pointer + size
+  // Buddy Allocator use karenge
+  // Kitne bytes chahiye? header + padding + pointer sab milake
   size_t required_size = size + sizeof(header_t) + 4;
   if (align)
     required_size += 4096;
@@ -74,7 +73,7 @@ void *kmalloc_real(uint32_t size, int align, uint32_t *phys) {
   }
   adjusted_ptr += 4; // Always offset by 4 for header pointer
 
-  // Store actual Buddy block pointer just before the returned buffer
+  // Buddy block ka pointer buffer se pehle chhupa dete hain
   *((uint32_t *)(adjusted_ptr - 4)) = (uint32_t)buddy_ptr;
 
   header_t *header = (header_t *)buddy_ptr;
@@ -103,17 +102,17 @@ void kfree(void *p) {
     return;
   }
 
-  // Get the actual Buddy block from the stored pointer
+  // Asli Buddy block pointer nikalo jo humne chhupa ke rakha tha
   uint32_t buddy_ptr = *((uint32_t *)((uintptr_t)p - 4));
   if (buddy_ptr < kheap.start_address || buddy_ptr > kheap.end_address) {
-    serial_log("HEAP: Invalid header pointer - potential corruption!");
+    serial_log("HEAP: Pointer galat hai - corruption lag raha hai!");
     sti();
     return;
   }
 
   header_t *header = (header_t *)buddy_ptr;
   if (header->magic != 0xCAFEBABE) {
-    serial_log("HEAP: Double free or corruption!");
+    serial_log("HEAP: Double free ya corruption, kuch toh gadbad hai!");
     sti();
     return;
   }

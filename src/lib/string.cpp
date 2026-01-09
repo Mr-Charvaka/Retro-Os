@@ -143,4 +143,12 @@ int strncmp(const char *s1, const char *s2, int n) {
     return 0;
   return *(const unsigned char *)s1 - *(const unsigned char *)s2;
 }
+char *strrchr(const char *s, int c) {
+  char *last = 0;
+  do {
+    if (*s == (char)c)
+      last = (char *)s;
+  } while (*s++);
+  return last;
+}
 }

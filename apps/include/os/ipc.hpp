@@ -13,6 +13,8 @@ namespace OS {
 constexpr int MSG_GFX_CREATE_WINDOW = 1;
 constexpr int MSG_GFX_WINDOW_CREATED = 2;
 constexpr int MSG_GFX_INVALIDATE_RECT = 3;
+constexpr int MSG_GFX_MOUSE_EVENT = 4;
+constexpr int MSG_GFX_KEY_EVENT = 5;
 
 struct msg_gfx_create_window_t {
   int width;
@@ -30,6 +32,17 @@ struct msg_gfx_invalidate_t {
   int x, y, width, height;
 };
 
+struct msg_gfx_mouse_event_t {
+  int window_id;
+  int x, y;
+  int buttons;
+};
+
+struct msg_gfx_key_event_t {
+  int window_id;
+  char key;
+};
+
 struct gfx_msg_t {
   uint32_t type;
   uint32_t size;
@@ -37,18 +50,27 @@ struct gfx_msg_t {
     msg_gfx_create_window_t create;
     msg_gfx_window_created_t created;
     msg_gfx_invalidate_t invalidate;
+    msg_gfx_mouse_event_t mouse;
+    msg_gfx_key_event_t key;
   } data;
-};
+} __attribute__((packed));
 
 class IPCClient {
 private:
   int sock_fd;
   int window_id;
   uint32_t *framebuffer;
-  int width;
-  int height;
+  int width, height;
 
 public:
+  bool recv_msg(gfx_msg_t *msg) {
+    if (sock_fd < 0)
+      return false;
+    // We want a non-blocking read if possible, but for now we'll try a small
+    // read
+    int n = Syscall::read(sock_fd, msg, sizeof(gfx_msg_t));
+    return n > 0;
+  }
   IPCClient()
       : sock_fd(-1), window_id(-1), framebuffer(nullptr), width(0), height(0) {}
 

@@ -17,6 +17,7 @@ char *itoa(int n, char *str, int base);
 char *strcpy(char *dest, const char *src);
 char *strncpy(char *dest, const char *src, int n);
 int strncmp(const char *s1, const char *s2, int n);
+char *strrchr(const char *s, int c);
 
 #ifdef __cplusplus
 }

@@ -1,3 +1,5 @@
+// Drivers aur headers mangwao
+#include "syscall.h"
 #include "../drivers/rtc.h"
 #include "../drivers/serial.h"
 #include "../include/errno.h"
@@ -10,30 +12,35 @@
 #include "pipe.h"
 #include "pmm.h"
 #include "process.h"
+#include "pty.h"
 #include "shm.h"
 #include "socket.h"
 #include "tty.h"
 #include "vm.h"
 
+struct iovec {
+  void *iov_base;
+  size_t iov_len;
+};
+
 #define AT_FDCWD -100
 
-// External FAT16 function
+// Bahar ke FAT16 functions
 extern "C" int fat16_create_file(const char *filename);
 extern "C" void fat16_get_stats_bytes(uint32_t *total_bytes,
                                       uint32_t *free_bytes);
 
-// External tick counter from timer
+// Timer wala tick counter
 extern uint32_t tick;
 
-// System hostname
+// System ki details (Abhi toh yahi hai)
 static char system_hostname[64] = "retro-os";
-
-// System info
 static const char *sysname = "Retro-OS";
 static const char *release = "1.0.11";
 static const char *version = "#1 SMP";
 static const char *machine = "i686";
 
+// Dekho pointer user space ka hai ya nahi
 static bool validate_user_pointer(const void *ptr, uint32_t size) {
   uintptr_t p = (uintptr_t)ptr;
   if (p < 0x20000000)
@@ -43,6 +50,7 @@ static bool validate_user_pointer(const void *ptr, uint32_t size) {
   return true;
 }
 
+// Unveil permissions check karne ka logic
 static bool check_unveil(const char *path, uint32_t needed_perms) {
   if (!current_process->unveils)
     return true;
@@ -60,8 +68,58 @@ static bool check_unveil(const char *path, uint32_t needed_perms) {
 
 static void syscall_handler(registers_t *regs);
 
-// individual syscall implementations
+// Individual syscalls yahan define honge
 typedef int (*syscall_ptr)(registers_t *);
+
+extern "C" void *sys_get_framebuffer();
+extern "C" int sys_fb_width();
+extern "C" int sys_fb_height();
+extern "C" void sys_fb_swap();
+extern "C" void net_ping(uint32_t ip);
+
+extern "C" int sys_pty_create(int *m, int *s);
+
+int sys_pty_create_call(registers_t *regs) {
+  return sys_pty_create(reinterpret_cast<int *>(regs->ebx),
+                        reinterpret_cast<int *>(regs->ecx));
+}
+
+int sys_net_ping_call(registers_t *regs) {
+  net_ping(regs->ebx);
+  return 0;
+}
+
+// TCP test - forward declaration for new net_stack
+extern "C" int net_stack_tcp_test(void);
+extern "C" void net_stack_init(void);
+
+int sys_tcp_test_call(registers_t *regs) {
+  (void)regs;
+  extern void serial_log(const char *);
+  serial_log("SYSCALL: TCP Test v2 - using new net_stack with ARP");
+  return net_stack_tcp_test();
+}
+
+int sys_get_framebuffer_call(registers_t *regs) {
+  (void)regs;
+  return (int)(uintptr_t)sys_get_framebuffer();
+}
+int sys_fb_width_call(registers_t *regs) {
+  (void)regs;
+  return sys_fb_width();
+}
+int sys_fb_height_call(registers_t *regs) {
+  (void)regs;
+  return sys_fb_height();
+}
+int sys_fb_swap_call(registers_t *regs) {
+  (void)regs;
+  sys_fb_swap();
+  return 0;
+}
+
+// Declare the GUI terminal output function
+extern "C" void gui_terminal_output(const char *str);
 
 int sys_print_serial(registers_t *regs) {
   if (!(current_process->pledges & PLEDGE_STDIO))
@@ -69,6 +127,10 @@ int sys_print_serial(registers_t *regs) {
   const char *str = (const char *)(uintptr_t)regs->ebx;
   serial_log_hex("  String at: ", (uint32_t)(uintptr_t)str);
   serial_log(str);
+
+  // Also send to GUI terminal if active
+  gui_terminal_output(str);
+
   tty_t *tty = tty_get_console();
   if (tty && str) {
     int len = 0;
@@ -102,13 +164,22 @@ int sys_open(registers_t *regs) {
 
   vfs_node_t *node = vfs_resolve_path(path);
   if (node) {
+    file_description_t *desc =
+        (file_description_t *)kmalloc(sizeof(file_description_t));
+    desc->node = node;
+    desc->flags = flags;
+    desc->offset = 0;
+    desc->ref_count = 1;
+
     for (int j = 0; j < MAX_PROCESS_FILES; j++) {
       if (current_process->fd_table[j] == 0) {
-        current_process->fd_table[j] = node;
-        open_vfs(node, (flags & 3) != O_WRONLY, (flags & 3) != O_RDONLY);
+        current_process->fd_table[j] = desc;
+        if (node->open)
+          node->open(node);
         return j;
       }
     }
+    kfree(desc);
     return -EMFILE;
   }
   return -ENOENT;
@@ -124,21 +195,30 @@ int sys_openat(registers_t *regs) {
     if (dirfd < 0 || dirfd >= MAX_PROCESS_FILES ||
         !current_process->fd_table[dirfd])
       return -EBADF;
-    dir_node = current_process->fd_table[dirfd];
+    dir_node = current_process->fd_table[dirfd]->node;
   }
 
   vfs_node_t *node = vfs_resolve_path_relative(dir_node, path);
   if (node) {
+    file_description_t *desc =
+        (file_description_t *)kmalloc(sizeof(file_description_t));
+    desc->node = node;
+    desc->flags = flags;
+    desc->offset = 0;
+    desc->ref_count = 1;
+
     for (int j = 0; j < MAX_PROCESS_FILES; j++) {
       if (current_process->fd_table[j] == 0) {
-        current_process->fd_table[j] = node;
-        open_vfs(node, (flags & 3) != O_WRONLY, (flags & 3) != O_RDONLY);
+        current_process->fd_table[j] = desc;
+        if (node->open)
+          node->open(node);
         return j;
       }
     }
-    return -EMFILE;
+    kfree(desc);
+    return -EMFILE; // Bahut saare files khul gaye hain bhai
   }
-  return -ENOENT;
+  return -ENOENT; // Aisa koi file nahi hai
 }
 
 int sys_read(registers_t *regs) {
@@ -147,7 +227,11 @@ int sys_read(registers_t *regs) {
   uint32_t size = (uint32_t)regs->edx;
   if (validate_user_pointer(buf, size) && fd >= 0 && fd < MAX_PROCESS_FILES &&
       current_process->fd_table[fd]) {
-    return read_vfs(current_process->fd_table[fd], 0, size, buf);
+    file_description_t *desc = current_process->fd_table[fd];
+    int n = vfs_read(desc->node, desc->offset, buf, size);
+    if (n > 0)
+      desc->offset += n;
+    return n;
   }
   return -EBADF;
 }
@@ -162,11 +246,15 @@ int sys_readv(registers_t *regs) {
   if (!iov || iovcnt <= 0)
     return -EINVAL;
 
-  vfs_node_t *node = current_process->fd_table[fd];
+  file_description_t *desc = current_process->fd_table[fd];
   ssize_t total_read = 0;
   for (int i = 0; i < iovcnt; i++) {
-    uint32_t n = read_vfs(node, 0, iov[i].iov_len, (uint8_t *)iov[i].iov_base);
-    total_read += n;
+    uint32_t n = vfs_read(desc->node, desc->offset, (uint8_t *)iov[i].iov_base,
+                          iov[i].iov_len);
+    if (n > 0) {
+      desc->offset += n;
+      total_read += n;
+    }
     if (n < iov[i].iov_len)
       break;
   }
@@ -179,7 +267,11 @@ int sys_write(registers_t *regs) {
   uint32_t size = (uint32_t)regs->edx;
   if (validate_user_pointer(buf, size) && fd >= 0 && fd < MAX_PROCESS_FILES &&
       current_process->fd_table[fd]) {
-    return write_vfs(current_process->fd_table[fd], 0, size, buf);
+    file_description_t *desc = current_process->fd_table[fd];
+    int n = vfs_write(desc->node, desc->offset, buf, size);
+    if (n > 0)
+      desc->offset += n;
+    return n;
   }
   return -EBADF;
 }
@@ -194,11 +286,15 @@ int sys_writev(registers_t *regs) {
   if (!iov || iovcnt <= 0)
     return -EINVAL;
 
-  vfs_node_t *node = current_process->fd_table[fd];
+  file_description_t *desc = current_process->fd_table[fd];
   ssize_t total_written = 0;
   for (int i = 0; i < iovcnt; i++) {
-    uint32_t n = write_vfs(node, 0, iov[i].iov_len, (uint8_t *)iov[i].iov_base);
-    total_written += n;
+    uint32_t n = vfs_write(desc->node, desc->offset, (uint8_t *)iov[i].iov_base,
+                           iov[i].iov_len);
+    if (n > 0) {
+      desc->offset += n;
+      total_written += n;
+    }
     if (n < iov[i].iov_len)
       break;
   }
@@ -208,8 +304,15 @@ int sys_writev(registers_t *regs) {
 int sys_close(registers_t *regs) {
   int fd = (int)regs->ebx;
   if (fd >= 0 && fd < MAX_PROCESS_FILES && current_process->fd_table[fd]) {
-    close_vfs(current_process->fd_table[fd]);
+    file_description_t *desc = current_process->fd_table[fd];
     current_process->fd_table[fd] = 0;
+
+    desc->ref_count--;
+    if (desc->ref_count == 0) {
+      if (desc->node->close)
+        desc->node->close(desc->node);
+      kfree(desc);
+    }
     return 0;
   }
   return -EBADF;
@@ -227,7 +330,7 @@ int sys_sbrk(registers_t *regs) {
     for (uint32_t page = old_page_top; page < new_page_top; page += 4096) {
       void *phys = pmm_alloc_block();
       if (!phys)
-        return -ENOMEM;
+        return -ENOMEM; // Memory khatam
       vm_map_page((uint32_t)phys, page, 7);
       memset((void *)page, 0, 4096);
     }
@@ -283,12 +386,12 @@ int sys_execve(registers_t *regs) {
 
 int sys_wait(registers_t *regs) {
   int *status = (int *)regs->ebx;
-  return wait_process(status);
+  return wait_process(status); // Bacche ka wait karo
 }
 
 int sys_exit(registers_t *regs) {
   exit_process(regs->ebx);
-  return 0; // Should not reach
+  return 0; // Yahan tak code aana nahi chahiye
 }
 
 int sys_pipe_call(registers_t *regs) {
@@ -329,7 +432,8 @@ int sys_readdir_call(registers_t *regs) {
   uint32_t index = (uint32_t)regs->ecx;
   struct dirent *de = (struct dirent *)regs->edx;
   if (fd >= 0 && fd < MAX_PROCESS_FILES && current_process->fd_table[fd]) {
-    struct dirent *res = readdir_vfs(current_process->fd_table[fd], index);
+    file_description_t *desc = current_process->fd_table[fd];
+    struct dirent *res = readdir_vfs(desc->node, index);
     if (res) {
       memcpy(de, res, sizeof(struct dirent));
       return 0;
@@ -344,7 +448,7 @@ int sys_statfs_call(registers_t *regs) {
   uint32_t *free = (uint32_t *)regs->ecx;
   uint32_t *block_size = (uint32_t *)regs->edx;
   if (block_size)
-    *block_size = 1;
+    *block_size = 1; // Block size 1 byte rakh rahe hain abhi ke liye
   fat16_get_stats_bytes(total, free);
   return 0;
 }
@@ -356,7 +460,7 @@ int sys_chdir_call(registers_t *regs) {
     if (path[0] == '/') {
       strcpy(current_process->cwd, path);
     } else {
-      strcat(current_process->cwd, "/");
+      strcat(current_process->cwd, "/"); // Relative path hai toh jod do
       strcat(current_process->cwd, path);
     }
     return 0;
@@ -365,11 +469,11 @@ int sys_chdir_call(registers_t *regs) {
 }
 
 int sys_unlink_call(registers_t *regs) {
-  return unlink_vfs(vfs_root, (const char *)regs->ebx);
+  return vfs_unlink((const char *)regs->ebx);
 }
 
 int sys_mkdir_call(registers_t *regs) {
-  return mkdir_vfs(vfs_root, (const char *)regs->ebx, 0);
+  return vfs_mkdir((const char *)regs->ebx, 0777);
 }
 
 int sys_getcwd_call(registers_t *regs) {
@@ -392,7 +496,7 @@ int sys_stat_call(registers_t *regs) {
     st->st_nlink = 1;
     st->st_uid = node->uid;
     st->st_gid = node->gid;
-    st->st_size = node->length;
+    st->st_size = node->size;
     st->st_atime = 0;
     st->st_mtime = 0;
     st->st_ctime = 0;
@@ -406,14 +510,15 @@ int sys_fstat_call(registers_t *regs) {
   struct stat *st = (struct stat *)regs->ecx;
   if (fd >= 0 && fd < MAX_PROCESS_FILES && current_process->fd_table[fd] &&
       st) {
-    vfs_node_t *node = current_process->fd_table[fd];
+    file_description_t *desc = current_process->fd_table[fd];
+    vfs_node_t *node = desc->node;
     st->st_dev = 0;
     st->st_ino = node->inode;
     st->st_mode = node->flags;
     st->st_nlink = 1;
     st->st_uid = node->uid;
     st->st_gid = node->gid;
-    st->st_size = node->length;
+    st->st_size = node->size;
     st->st_atime = 0;
     st->st_mtime = 0;
     st->st_ctime = 0;
@@ -432,7 +537,7 @@ int sys_fstatat_call(registers_t *regs) {
     if (dirfd < 0 || dirfd >= MAX_PROCESS_FILES ||
         !current_process->fd_table[dirfd])
       return -EBADF;
-    dir_node = current_process->fd_table[dirfd];
+    dir_node = current_process->fd_table[dirfd]->node;
   }
 
   vfs_node_t *node = vfs_resolve_path_relative(dir_node, path);
@@ -443,7 +548,7 @@ int sys_fstatat_call(registers_t *regs) {
     st->st_nlink = 1;
     st->st_uid = node->uid;
     st->st_gid = node->gid;
-    st->st_size = node->length;
+    st->st_size = node->size;
     st->st_atime = 0;
     st->st_mtime = 0;
     st->st_ctime = 0;
@@ -452,7 +557,26 @@ int sys_fstatat_call(registers_t *regs) {
   return -ENOENT;
 }
 
-int sys_seek(registers_t *regs) { return 0; }
+int sys_seek(registers_t *regs) {
+  int fd = (int)regs->ebx;
+  int64_t offset = (int64_t)regs->ecx;
+  int whence = (int)regs->edx;
+
+  if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
+    return -EBADF;
+
+  file_description_t *desc = current_process->fd_table[fd];
+  if (whence == SEEK_SET) {
+    desc->offset = offset;
+  } else if (whence == SEEK_CUR) {
+    desc->offset += offset;
+  } else if (whence == SEEK_END) {
+    desc->offset = desc->node->size + offset;
+  } else {
+    return -EINVAL;
+  }
+  return (int)desc->offset;
+}
 
 int sys_dup_call(registers_t *regs) {
   int oldfd = (int)regs->ebx;
@@ -474,8 +598,15 @@ int sys_dup2_call(registers_t *regs) {
   int newfd = (int)regs->ecx;
   if (oldfd >= 0 && oldfd < MAX_PROCESS_FILES && newfd >= 0 &&
       newfd < MAX_PROCESS_FILES && current_process->fd_table[oldfd]) {
-    if (current_process->fd_table[newfd])
-      close_vfs(current_process->fd_table[newfd]);
+    if (current_process->fd_table[newfd]) {
+      file_description_t *old_desc = current_process->fd_table[newfd];
+      old_desc->ref_count--;
+      if (old_desc->ref_count == 0) {
+        if (old_desc->node->close)
+          old_desc->node->close(old_desc->node);
+        kfree(old_desc);
+      }
+    }
     current_process->fd_table[newfd] = current_process->fd_table[oldfd];
     current_process->fd_table[newfd]->ref_count++;
     return newfd;
@@ -694,14 +825,14 @@ int sys_setrlimit_call(registers_t *regs);
 
 // The Syscall Jump Table
 // ============================================================================
-// New POSIX Syscall Implementations (Phases 1-12)
+// Naye POSIX Syscall Implementations (Phases 1-12)
 // ============================================================================
 
 // ----------------------------------------------------------------------------
-// Phase 1: Process Management & Signals
+// Phase 1: Process Management aur Signals
 // ----------------------------------------------------------------------------
 
-// These call existing kernel functions from process.cpp/signal.cpp
+// Ye process.cpp aur signal.cpp ke functions ko call karte hain
 int sys_waitpid_call(registers_t *regs) {
   return sys_waitpid((int)regs->ebx, (int *)regs->ecx, (int)regs->edx);
 }
@@ -744,7 +875,7 @@ int sys_sigwait_call(registers_t *regs) {
   return sys_sigwait((const sigset_t *)regs->ebx, (int *)regs->ecx);
 }
 
-// pause/abort from process.cpp
+// process.cpp se pause/abort uthaya hai
 int sys_pause_call(registers_t *regs) {
   (void)regs;
   return -1; /* stub */
@@ -759,8 +890,8 @@ int sys_alarm_call(registers_t *regs) {
 }
 
 // ----------------------------------------------------------------------------
-// Phase 2: File & Directory Operations
-// These use file_ops.cpp functions (without sys_ prefix)
+// Phase 2: File aur Directory Operations
+// Ye file_ops.cpp ke functions use karte hain (bina sys_ prefix ke)
 // ----------------------------------------------------------------------------
 extern "C" int pread(int fd, void *buf, size_t count, int offset);
 int sys_pread_call(registers_t *regs) {
@@ -853,7 +984,7 @@ int sys_fcntl_call(registers_t *regs) {
 }
 
 // ----------------------------------------------------------------------------
-// Phase 3: Directory Management
+// Phase 3: Directory Management (Ye bhi zaroori hai)
 // ----------------------------------------------------------------------------
 extern "C" int fchdir(int fd);
 int sys_fchdir_call(registers_t *regs) { return fchdir((int)regs->ebx); }
@@ -864,7 +995,7 @@ int sys_getdents_call(registers_t *regs) {
 }
 
 // ----------------------------------------------------------------------------
-// Phase 4: Pthreads
+// Phase 4: Pthreads (Threads ka maamla)
 // ----------------------------------------------------------------------------
 extern "C" int pthread_create(void *thread, const void *attr,
                               void *(*start_routine)(void *), void *arg);
@@ -920,7 +1051,7 @@ int sys_pthread_cond_signal_call(registers_t *regs) {
 }
 
 // ----------------------------------------------------------------------------
-// Phase 5: IPC (Semaphores & Message Queues)
+// Phase 5: IPC (Semaphores aur Message Queues)
 // ----------------------------------------------------------------------------
 extern "C" int sem_open(const char *name, int oflag, unsigned int mode,
                         unsigned int value);
@@ -973,7 +1104,7 @@ int sys_mq_receive_call(registers_t *regs) {
 }
 
 // ----------------------------------------------------------------------------
-// Phase 6: Sockets
+// Phase 6: Sockets (Internet ki duniya)
 // ----------------------------------------------------------------------------
 extern "C" int listen(int sockfd, int backlog);
 int sys_listen_call(registers_t *regs) {
@@ -1038,7 +1169,7 @@ int sys_shutdown_call(registers_t *regs) {
 }
 
 // ----------------------------------------------------------------------------
-// Phase 7: Time
+// Phase 7: Time (Waqt ka khel)
 // ----------------------------------------------------------------------------
 extern "C" int nanosleep(const void *req, void *rem);
 int sys_nanosleep_call(registers_t *regs) {
@@ -1059,7 +1190,7 @@ extern "C" long times(void *buf);
 int sys_times_call(registers_t *regs) { return (int)times((void *)regs->ebx); }
 
 // ----------------------------------------------------------------------------
-// Phase 8: User Management
+// Phase 8: User Management (Kaun hai tu?)
 // ----------------------------------------------------------------------------
 extern "C" int setuid(unsigned int uid);
 int sys_setuid_call(registers_t *regs) {
@@ -1085,7 +1216,7 @@ int sys_setresuid_call(registers_t *regs) {
 }
 
 // ----------------------------------------------------------------------------
-// Phase 9-10: Termios/Select
+// Phase 9-10: Termios/Select (Input/Output control)
 // ----------------------------------------------------------------------------
 extern "C" int tcgetattr(int fd, void *termios_p);
 int sys_tcgetattr_call(registers_t *regs) {
@@ -1107,7 +1238,7 @@ int sys_poll_call(registers_t *regs) {
 }
 
 // ----------------------------------------------------------------------------
-// Phase 11-12: Memory/Config
+// Phase 11-12: Memory/Config (System settings)
 // ----------------------------------------------------------------------------
 extern "C" int sys_mprotect(void *addr, size_t len, int prot);
 int sys_mprotect_call(registers_t *regs) {
@@ -1160,9 +1291,9 @@ int sys_setrlimit_call(registers_t *regs) {
 }
 
 // ============================================================================
-// Syscall Table & Handler (Moved to end to see all declarations)
+// Syscall Table aur Handler (Yahan declare kiye taaki sab dikhe)
 // ============================================================================
-static syscall_ptr syscall_table[] = {
+static syscall_ptr syscall_table[256] = {
     sys_print_serial,   // 0
     sys_get_pid,        // 1
     sys_open,           // 2
@@ -1300,16 +1431,28 @@ static syscall_ptr syscall_table[] = {
     sys_setegid_call,   // 129
     sys_setresuid_call, // 130
     // Phase 9-10: Termios/Select
-    sys_tcgetattr_call,                                   // 131
-    sys_tcsetattr_call,                                   // 132
-    sys_select_call,                                      // 133
-    sys_poll_call,                                        // 134
-    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, // 135-140
+    sys_tcgetattr_call, // 131
+    sys_tcsetattr_call, // 132
+    sys_select_call,    // 133
+    sys_poll_call,      // 134
+    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
     // Phase 11-12: Memory/Config
-    sys_mprotect_call, // 141
-    sys_msync_call,    // 142
-    sys_mlock_call,    // 143
-    sys_sysconf_call   // 144
+    sys_mprotect_call,        // 141
+    sys_msync_call,           // 142
+    sys_mlock_call,           // 143
+    sys_sysconf_call,         // 144
+    nullptr,                  // 145
+    nullptr,                  // 146
+    nullptr,                  // 147
+    nullptr,                  // 148
+    nullptr,                  // 149
+    sys_get_framebuffer_call, // 150
+    sys_fb_width_call,        // 151
+    sys_fb_height_call,       // 152
+    sys_fb_swap_call,         // 153
+    sys_pty_create_call,      // 154
+    sys_net_ping_call,        // 155
+    sys_tcp_test_call         // 156
 };
 
 static const int num_syscalls = sizeof(syscall_table) / sizeof(syscall_ptr);

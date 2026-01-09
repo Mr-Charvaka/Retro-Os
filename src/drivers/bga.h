@@ -21,6 +21,11 @@
 #define VBE_DISPI_ENABLED 0x01
 #define VBE_DISPI_LFB_ENABLED 0x40
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 void bga_set_video_mode(uint16_t width, uint16_t height, uint16_t bpp);
-
+#ifdef __cplusplus
+}
+#endif
 #endif

@@ -2,11 +2,20 @@
 #include "../include/irq.h"
 #include "../include/types.h"
 #include "../kernel/apic.h"
-#include "../kernel/gui.h"
 #include "serial.h"
 
 uint8_t mouse_cycle = 0;
 int8_t mouse_byte[3];
+
+static int mouse_x = 512;
+static int mouse_y = 384;
+static uint8_t mouse_btn = 0;
+
+extern "C" void get_mouse_state(int *x, int *y, uint8_t *btn) {
+  *x = mouse_x;
+  *y = mouse_y;
+  *btn = mouse_btn;
+}
 
 void mouse_wait(uint8_t type) {
   uint32_t _time_out = 100000;
@@ -64,11 +73,22 @@ void mouse_callback(registers_t *regs) {
 
     // Packet ready
     uint8_t state = mouse_byte[0];
-    int8_t x_rel = (int8_t)mouse_byte[1];
-    int8_t y_rel = (int8_t)mouse_byte[2];
+    int8_t x_rel = mouse_byte[1];
+    int8_t y_rel = mouse_byte[2];
 
-    // Update GUI
-    update_mouse_position(x_rel, y_rel, state);
+    mouse_x += x_rel;
+    mouse_y -= y_rel; // Y is inverted in mouse packets
+
+    if (mouse_x < 0)
+      mouse_x = 0;
+    if (mouse_y < 0)
+      mouse_y = 0;
+    if (mouse_x > 1023)
+      mouse_x = 1023;
+    if (mouse_y > 767)
+      mouse_y = 767;
+
+    mouse_btn = state & 0x07; // Fill left, right, middle buttons
   }
 }
 

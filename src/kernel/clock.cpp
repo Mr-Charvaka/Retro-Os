@@ -1,6 +1,6 @@
 // ============================================================================
-// clock.cpp - POSIX Time and Clock Implementation
-// Entirely hand-crafted for Retro-OS kernel
+// clock.cpp - POSIX Time aur Clock ka sara implementation yahan hai
+// Poora hand-crafted hai apne Retro-OS ke liye
 // ============================================================================
 
 #include "../drivers/rtc.h"
@@ -11,18 +11,17 @@
 #include "heap.h"
 #include "process.h"
 
-
 extern "C" {
 
-// Global tick counter from timer.cpp (100Hz assumed)
+// Global tick counter (100Hz maan ke chal rahe hain)
 extern uint32_t tick;
 #define TICKS_PER_SEC 100
 
-// Boot time (set during init)
+// Boot time (init ke waqt set hota hai)
 static uint32_t boot_time_sec = 0;
 
 // ============================================================================
-// clock_gettime - Get high-resolution clock time
+// clock_gettime - High-resolution time nikalne ke liye
 // ============================================================================
 
 int clock_gettime(clockid_t clk_id, struct timespec *tp) {
@@ -97,7 +96,7 @@ int clock_gettime(clockid_t clk_id, struct timespec *tp) {
 }
 
 // ============================================================================
-// clock_settime - Set clock time (requires privileges)
+// clock_settime - Time set karne ke liye (aukat chahiye iske liye)
 // ============================================================================
 
 int clock_settime(clockid_t clk_id, const struct timespec *tp) {
@@ -149,7 +148,7 @@ int clock_getres(clockid_t clk_id, struct timespec *res) {
 }
 
 // ============================================================================
-// nanosleep - High-resolution sleep
+// nanosleep - Chhoti si neend (High-resolution sleep)
 // ============================================================================
 
 int nanosleep(const struct timespec *req, struct timespec *rem) {
@@ -171,7 +170,7 @@ int nanosleep(const struct timespec *req, struct timespec *rem) {
   current_process->state = PROCESS_SLEEPING;
   schedule();
 
-  // Check if we woke early (e.g., due to signal)
+  // Check karo agar jaldi jag gaye (kisi signal ki wajah se)
   uint32_t elapsed = tick - start;
   if (elapsed < sleep_ticks) {
     // Interrupted
@@ -322,7 +321,7 @@ struct kernel_timer {
   int pid;   // Process that owns this timer
   int signo; // Signal to send
   struct itimerspec value;
-  uint32_t next_fire; // Tick when timer fires
+  uint32_t next_fire; // Is tick pe timer bajega
 };
 
 static struct kernel_timer timers[MAX_TIMERS];
@@ -432,7 +431,7 @@ int timer_getoverrun(timer_t timerid) {
 }
 
 // ============================================================================
-// check_timers - Called from timer interrupt
+// check_timers - Timer interrupt se bar-bar call hota hai
 // ============================================================================
 
 void check_timers(void) {
@@ -469,6 +468,15 @@ void clock_init(void) {
     timers[i].in_use = 0;
   }
   serial_log("CLOCK: Subsystem initialized");
+}
+
+// ============================================================================
+// timer_now_ms - Get current time in milliseconds (for network stack)
+// ============================================================================
+
+uint32_t timer_now_ms(void) {
+  // tick runs at 100Hz, so each tick is 10ms
+  return tick * 10;
 }
 
 } // extern "C"

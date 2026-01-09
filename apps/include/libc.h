@@ -8,6 +8,40 @@
 #include "syscall.h"
 #include "userlib.h"
 
+#ifndef NULL
+#define NULL 0
+#endif
+
+#ifndef offsetof
+#define offsetof(type, member) ((uint32_t)&((type *)0)->member)
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int fork();
+int execve(const char *path, char *const argv[], char *const envp[]);
+int wait(int *status);
+int chdir(const char *path);
+char *getcwd(char *buf, size_t size);
+void exit(int status);
+
+int open(const char *path, int flags, ...);
+int close(int fd);
+ssize_t read(int fd, void *buf, size_t count);
+ssize_t write(int fd, const void *buf, size_t count);
+int unlink(const char *path);
+int rmdir(const char *path);
+int mkdir(const char *path, mode_t mode);
+
+void *malloc(size_t size);
+void free(void *ptr);
+
+#ifdef __cplusplus
+}
+#endif
+
 /* ============== STDLIB.H FUNCTIONS ============== */
 
 /* Absolute value */
@@ -424,8 +458,40 @@ static inline const char *strerror(int errnum) {
 
 /* ============== STDDEF.H ============== */
 
-#define NULL ((void *)0)
+#ifndef NULL
+#define NULL 0
+#endif
+
+#ifndef offsetof
 #define offsetof(type, member) ((uint32_t)&((type *)0)->member)
+#endif
+
+/* ============== POSIX PROTOTYPES ============== */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int fork();
+int execve(const char *path, char *const argv[], char *const envp[]);
+int wait(int *status);
+int chdir(const char *path);
+char *getcwd(char *buf, size_t size);
+void exit(int status);
+
+int open(const char *path, int flags, ...);
+int close(int fd);
+ssize_t read(int fd, void *buf, size_t count);
+ssize_t write(int fd, const void *buf, size_t count);
+int unlink(const char *path);
+int rmdir(const char *path);
+int mkdir(const char *path, mode_t mode);
+
+void *malloc(size_t size);
+void free(void *ptr);
+
+#ifdef __cplusplus
+}
+#endif
 
 /* ============== SETJMP (Simplified) ============== */
 
@@ -485,30 +551,16 @@ struct tm {
   int tm_isdst;
 };
 
+/* Time stubs */
 static inline time_t time(time_t *t) {
-  rtc_time_t rtc;
-  gettime(&rtc);
-  /* Simplified: days since 1970 * 86400 + hours*3600 + min*60 + sec */
-  time_t result = (rtc.year - 1970) * 31536000L + rtc.month * 2592000L +
-                  rtc.day * 86400L + rtc.hour * 3600L + rtc.minute * 60L +
-                  rtc.second;
   if (t)
-    *t = result;
-  return result;
+    *t = 0;
+  return 0;
 }
 
 static inline struct tm *localtime(const time_t *timer) {
   static struct tm tm;
-  rtc_time_t rtc;
-  gettime(&rtc);
-  tm.tm_sec = rtc.second;
-  tm.tm_min = rtc.minute;
-  tm.tm_hour = rtc.hour;
-  tm.tm_mday = rtc.day;
-  tm.tm_mon = rtc.month - 1;
-  tm.tm_year = rtc.year - 1900;
-  tm.tm_wday = day_of_week(rtc.year, rtc.month, rtc.day);
-  tm.tm_isdst = 0;
+  memset(&tm, 0, sizeof(struct tm));
   (void)timer;
   return &tm;
 }

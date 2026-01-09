@@ -6,7 +6,7 @@
 #include "process.h"
 
 void pipe_init() {
-  // Future initialization if needed
+  // Aage chalke kuch initialize karna ho toh
 }
 
 extern "C" {
@@ -24,9 +24,9 @@ uint32_t pipe_read(vfs_node_t *node, uint32_t offset, uint32_t size,
       if (pipe->write_closed)
         break;
       if (read_bytes > 0)
-        break; // Return what we have
+        break; // Jitna mila utna leke khush raho
 
-      // Block (Wait for data)
+      // Ruko zara, sabar karo (Data ka wait)
       current_process->state = PROCESS_WAITING;
       schedule();
       continue;
@@ -36,7 +36,7 @@ uint32_t pipe_read(vfs_node_t *node, uint32_t offset, uint32_t size,
     pipe->head = (pipe->head + 1) % PIPE_SIZE;
   }
 
-  // Wake up any waiting processes (potential writers waiting for space)
+  // Jo wait kar rahe hain unhe jagao (shayad koi likhne wala ho)
   process_t *p = ready_queue;
   if (p) {
     process_t *start = p;
@@ -62,9 +62,9 @@ uint32_t pipe_write(vfs_node_t *node, uint32_t offset, uint32_t size,
     uint32_t next_tail = (pipe->tail + 1) % PIPE_SIZE;
     if (next_tail == pipe->head) {
       if (written_bytes > 0)
-        break; // Return what we have
+        break; // Jitna likha gaya utna kaafi hai abhi ke liye
 
-      // Block (Wait for space)
+      // Jagah nahi hai, thoda ruko
       current_process->state = PROCESS_WAITING;
       schedule();
       continue;
@@ -74,7 +74,7 @@ uint32_t pipe_write(vfs_node_t *node, uint32_t offset, uint32_t size,
     pipe->tail = next_tail;
   }
 
-  // Wake up any waiting processes (potential readers waiting for data)
+  // Padhne walon ko jagao, maal aa gaya hai
   process_t *p = ready_queue;
   if (p) {
     process_t *start = p;
@@ -103,7 +103,7 @@ void pipe_close(vfs_node_t *node) {
     kfree(pipe);
   }
 
-  // Wake up others so they see the state change
+  // Baakiyo ko batao ki dukaan band ho rahi hai ya khul rahi hai
   process_t *p = ready_queue;
   if (p) {
     process_t *start = p;
@@ -119,8 +119,8 @@ int sys_pipe(uint32_t *filedes) {
   if (!filedes)
     return -1;
 
-  // Check if pointer is valid for writing (very basic check)
-  // In a real OS we'd use vm_verify_pointer
+  // Check karo pointer sahi hai ya nahi (basic wala)
+  // Asli OS mein vm_verify_pointer use karte
 
   pipe_t *pipe = (pipe_t *)kmalloc(sizeof(pipe_t));
   if (!pipe)
@@ -137,27 +137,27 @@ int sys_pipe(uint32_t *filedes) {
   pipe->read_closed = 0;
   pipe->write_closed = 0;
 
-  // Create VFS node for read end
+  // Read end ke liye VFS node banao
   vfs_node_t *read_node = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
   memset(read_node, 0, sizeof(vfs_node_t));
   strcpy(read_node->name, "pipe_read");
-  read_node->impl = (uint32_t)(uintptr_t)pipe;
+  read_node->impl = (void *)pipe;
   read_node->read = pipe_read;
   read_node->close = pipe_close;
   read_node->flags = 0x1; // READ side
   read_node->ref_count = 1;
 
-  // Create VFS node for write end
+  // Write end ke liye VFS node banao
   vfs_node_t *write_node = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
   memset(write_node, 0, sizeof(vfs_node_t));
   strcpy(write_node->name, "pipe_write");
-  write_node->impl = (uint32_t)(uintptr_t)pipe;
+  write_node->impl = (void *)pipe;
   write_node->write = pipe_write;
   write_node->close = pipe_close;
   write_node->flags = 0x2; // WRITE side
   write_node->ref_count = 1;
 
-  // Find slots in current process fd_table
+  // Process ke fd_table mein jagah dhundo
   int f1 = -1, f2 = -1;
   for (int i = 0; i < MAX_PROCESS_FILES; i++) {
     if (current_process->fd_table[i] == 0) {
@@ -178,8 +178,22 @@ int sys_pipe(uint32_t *filedes) {
     return -1;
   }
 
-  current_process->fd_table[f1] = read_node;
-  current_process->fd_table[f2] = write_node;
+  file_description_t *desc1 =
+      (file_description_t *)kmalloc(sizeof(file_description_t));
+  desc1->node = read_node;
+  desc1->offset = 0;
+  desc1->flags = 0; // O_RDONLY
+  desc1->ref_count = 1;
+
+  file_description_t *desc2 =
+      (file_description_t *)kmalloc(sizeof(file_description_t));
+  desc2->node = write_node;
+  desc2->offset = 0;
+  desc2->flags = 1; // O_WRONLY
+  desc2->ref_count = 1;
+
+  current_process->fd_table[f1] = desc1;
+  current_process->fd_table[f2] = desc2;
 
   filedes[0] = (uint32_t)f1;
   filedes[1] = (uint32_t)f2;

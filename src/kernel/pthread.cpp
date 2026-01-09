@@ -179,7 +179,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
   uint32_t *stack_top = (uint32_t *)((uint8_t *)t->stack + stack_size);
 
   // Push arguments for thread_wrapper
-  *(--stack_top) = (uint32_t)t;
+  *(--stack_top) = (uint32_t)(uintptr_t)t;
   *(--stack_top) = 0; // Return address (not used)
 
   // Create as kernel thread (simplified)
@@ -645,7 +645,7 @@ int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
 
   cond->mutex = mutex;
   int my_signal = cond->signal_count;
-  cond->waiters++;
+  cond->waiters = cond->waiters + 1;
 
   // Release mutex while waiting
   pthread_mutex_unlock(mutex);
@@ -655,7 +655,7 @@ int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
     schedule();
   }
 
-  cond->waiters--;
+  cond->waiters = cond->waiters - 1;
 
   // Re-acquire mutex
   pthread_mutex_lock(mutex);
@@ -674,7 +674,7 @@ int pthread_cond_signal(pthread_cond_t *cond) {
     return EINVAL;
 
   if (cond->waiters > 0)
-    cond->signal_count++;
+    cond->signal_count = cond->signal_count + 1;
 
   return 0;
 }
@@ -748,7 +748,7 @@ int pthread_rwlock_rdlock(pthread_rwlock_t *rwlock) {
     pthread_mutex_lock(&rwlock->lock);
   }
 
-  rwlock->readers++;
+  rwlock->readers = rwlock->readers + 1;
   pthread_mutex_unlock(&rwlock->lock);
 
   return 0;
@@ -766,7 +766,7 @@ int pthread_rwlock_tryrdlock(pthread_rwlock_t *rwlock) {
     return EBUSY;
   }
 
-  rwlock->readers++;
+  rwlock->readers = rwlock->readers + 1;
   pthread_mutex_unlock(&rwlock->lock);
 
   return 0;
@@ -777,7 +777,7 @@ int pthread_rwlock_wrlock(pthread_rwlock_t *rwlock) {
     return EINVAL;
 
   pthread_mutex_lock(&rwlock->lock);
-  rwlock->write_waiters++;
+  rwlock->write_waiters = rwlock->write_waiters + 1;
 
   // Wait while there are readers or writers
   while (rwlock->readers > 0 || rwlock->writers > 0) {
@@ -786,8 +786,8 @@ int pthread_rwlock_wrlock(pthread_rwlock_t *rwlock) {
     pthread_mutex_lock(&rwlock->lock);
   }
 
-  rwlock->write_waiters--;
-  rwlock->writers++;
+  rwlock->write_waiters = rwlock->write_waiters - 1;
+  rwlock->writers = rwlock->writers + 1;
   rwlock->write_owner = pthread_self();
   pthread_mutex_unlock(&rwlock->lock);
 
@@ -806,7 +806,7 @@ int pthread_rwlock_trywrlock(pthread_rwlock_t *rwlock) {
     return EBUSY;
   }
 
-  rwlock->writers++;
+  rwlock->writers = rwlock->writers + 1;
   rwlock->write_owner = pthread_self();
   pthread_mutex_unlock(&rwlock->lock);
 
@@ -820,7 +820,7 @@ int pthread_rwlock_unlock(pthread_rwlock_t *rwlock) {
   pthread_mutex_lock(&rwlock->lock);
 
   if (rwlock->writers > 0) {
-    rwlock->writers--;
+    rwlock->writers = rwlock->writers + 1;
     rwlock->write_owner = 0;
   } else if (rwlock->readers > 0) {
     rwlock->readers--;

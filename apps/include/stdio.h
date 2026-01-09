@@ -5,8 +5,10 @@
 #ifndef _STDIO_H
 #define _STDIO_H
 
+#include "libc.h"
 #include "syscall.h"
 #include "userlib.h"
+#include <stdarg.h>
 
 #define BUFSIZ 1024
 #define EOF (-1)
@@ -216,7 +218,7 @@ static inline int rename_file(const char *old, const char *new_name) {
 }
 
 /* Formatted output */
-static inline int vfprintf(FILE *f, const char *fmt, va_list_type ap) {
+static inline int vfprintf(FILE *f, const char *fmt, va_list ap) {
   (void)ap;
   return fputs(fmt, f);
 }
@@ -225,7 +227,7 @@ static inline int fprintf(FILE *f, const char *fmt, ...) {
   return fputs(fmt, f);
 }
 
-static inline int vprintf(const char *fmt, va_list_type ap) {
+static inline int vprintf(const char *fmt, va_list ap) {
   return vfprintf(stdout, fmt, ap);
 }
 
@@ -243,10 +245,10 @@ static inline int snprintf(char *str, uint32_t n, const char *fmt, ...) {
 /* Perror */
 static inline void perror(const char *s) {
   if (s && *s) {
-    print(s);
-    print(": ");
+    fputs(s, stderr);
+    fputs(": ", stderr);
   }
-  print("Error\n");
+  fputs("Error\n", stderr);
 }
 
 /* Temporary files */
