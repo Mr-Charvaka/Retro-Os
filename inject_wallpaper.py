@@ -96,6 +96,7 @@ def inject():
             ("TEST.ELF", "apps/test.elf"),
             ("PING.ELF", "apps/ping.elf"),
             ("TCPTEST.ELF", "apps/tcptest.elf"),
+            ("BROWSER.ELF", "apps/browser.elf"),
             ("TRUTH.DAT", "TRUTH.DAT"),
         ]
         

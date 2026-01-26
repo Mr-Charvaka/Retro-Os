@@ -158,6 +158,7 @@ void launch_terminal();
 void launch_sysmonitor();
 void launch_calculator();
 void launch_notepad();
+void launch_browser();
 void load_dir();
 void open_item(const char *path);
 
@@ -465,7 +466,8 @@ enum IconID {
   ICON_TERMINAL,
   ICON_MONITOR,
   ICON_CALC,
-  ICON_NOTEPAD
+  ICON_NOTEPAD,
+  ICON_BROWSER
 };
 
 void draw_icon(IconID id, int x, int y, int size, uint32_t accent) {
@@ -540,6 +542,18 @@ void draw_icon(IconID id, int x, int y, int size, uint32_t accent) {
     FB::rect(x + 8, y + 14, size - 16, 2, 0xCCCCCC);
     FB::rect(x + 8, y + 20, size - 16, 2, 0xCCCCCC);
     FB::rect(x + 5, y + 2, size - 10, size / 6, 0x448AFF); // Header
+    break;
+  case ICON_BROWSER:
+    // Browser icon (Globe-ish)
+    FB::rect(x, y, size, size, 0xEEEEEE);
+    FB::rect(x + 2, y + 2, size - 4, size / 6, 0x3366FF); // URL bar area
+    // Globe circle mockup
+    int cx = x + size/2;
+    int cy = y + size/2 + 2;
+    int r = size/3;
+    FB::rect(cx - r, cy - r, r*2, r*2, 0x448AFF);
+    FB::rect(cx - r + 4, cy - 2, r*2 - 8, 4, 0xFFFFFF); // Equator
+    FB::rect(cx - 2, cy - r + 4, 4, r*2 - 8, 0xFFFFFF); // Meridian
     break;
   }
 }
@@ -1220,6 +1234,7 @@ void refresh() {
   add_or_update("Monitor", IconSystem::ICON_MONITOR, launch_sysmonitor);
   add_or_update("Notepad", IconSystem::ICON_NOTEPAD, launch_notepad);
   add_or_update("Calculator", IconSystem::ICON_CALC, launch_calculator);
+  add_or_update("Browser", IconSystem::ICON_BROWSER, launch_browser);
 
   // 2. Load from REAL VFS (/home/user/Desktop)
   int fd = sys_open("/home/user/Desktop", 0);
@@ -2702,6 +2717,14 @@ void launch_notepad() {
   if (ret < 0) {
     serial_log("GUI: Failed to launch /NOTEPAD.ELF, trying lowercase...");
     sys_spawn("/notepad.elf", nullptr);
+  }
+}
+
+void launch_browser() {
+  serial_log("GUI: Launching Browser...");
+  int ret = sys_spawn("/BROWSER.ELF", nullptr);
+  if (ret < 0) {
+      sys_spawn("/browser.elf", nullptr);
   }
 }
 

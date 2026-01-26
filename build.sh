@@ -40,6 +40,65 @@ build_app "notepad"
 build_app "test"
 build_app "ping"
 build_app "tcptest"
+# ... (Keep existing)
+build_app "ping"
+build_app "tcptest"
+
+# Browser Build
+build_browser() {
+    echo "  Building Browser..."
+    
+    # 1. Compile mbedtls (C)
+    echo "    Compiling mbedtls..."
+    find src/external/mbedtls/library -name "*.c" | while read -r file; do
+        outfile="${file%.c}.o"
+        # Using -D_POSIX_C_SOURCE for mbedtls if needed, or MBEDTLS_NO_PLATFORM_ENTROPY etc
+        # forcing 32-bit
+        gcc -ffreestanding -m32 -fno-pie -fstack-protector-strong -Os -g \
+            -I src/include -I src/external/mbedtls/include \
+            -c "$file" -o "$outfile"
+    done
+
+    # 2. Compile litehtml (C++)
+    echo "    Compiling litehtml..."
+    find src/external/litehtml/src -maxdepth 1 -name "*.cpp" | while read -r file; do
+        outfile="${file%.cpp}.o"
+        g++ -ffreestanding -m32 -fno-pie -fstack-protector-strong -Os -fno-rtti -fno-exceptions -std=c++20 -g \
+            -I src/include -I src/external/litehtml/include \
+            -c "$file" -o "$outfile"
+    done
+    # gumbo (C)
+    find src/external/litehtml/src/gumbo -name "*.c" | while read -r file; do
+        outfile="${file%.c}.o"
+        gcc -ffreestanding -m32 -fno-pie -fstack-protector-strong -Os -g \
+            -I src/include -I src/external/litehtml/include \
+            -c "$file" -o "$outfile"
+    done
+
+    # 3. Compile Browser App (C++)
+    echo "    Compiling Browser App..."
+    find apps/browser -name "*.cpp" | while read -r file; do
+        outfile="${file%.cpp}.o"
+        g++ -ffreestanding -m32 -fno-pie -fstack-protector-strong -Os -fno-rtti -fno-exceptions -std=c++20 -g \
+            -I apps/ -I apps/include -I src/include \
+            -I apps/browser \
+            -I src/external/mbedtls/include \
+            -I src/external/litehtml/include \
+            -c "$file" -o "$outfile"
+    done
+
+    # 4. Link
+    echo "    Linking Browser..."
+    MBED_OBJS=$(find src/external/mbedtls/library -name "*.o")
+    LITE_OBJS=$(find src/external/litehtml/src -name "*.o")
+    BROWSER_OBJS=$(find apps/browser -name "*.o")
+    
+    ld -m elf_i386 -T apps/linker.ld -o apps/browser.elf \
+        $BROWSER_OBJS $MBED_OBJS $LITE_OBJS \
+        apps/posix_impl.o apps/minimal_os_api.o apps/Contracts.o
+}
+
+build_browser
 # build_app "explorer"
 
 echo "  Building apps/posix_test.cpp..."
