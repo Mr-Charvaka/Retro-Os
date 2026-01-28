@@ -1,0 +1,8 @@
+#pragma once
+#include <Std/Vector.h>
+#include <Std/Forward.h>
+namespace std {
+    template<typename T>
+    using vector = Std::Vector<T>;
+    using Std::move;
+}
