@@ -1,0 +1,26 @@
+# Build artifacts
+*.o
+*.bin
+*.iso
+*.iso.bin
+*.img
+*.elf
+*.a
+*.d
+
+# Logs
+*.log
+*.txt
+serial.log
+qemu.log
+qemu_log.txt
+system_check.log
+
+# IDEs
+.vscode/
+.idea/
+
+# OS specific
+TRUTH.DAT
+build/
+bin/
