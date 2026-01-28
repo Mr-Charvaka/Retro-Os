@@ -134,7 +134,7 @@ Once the GUI loads, you can use the following terminal commands:
 
 ## 📜 License & Credits
 
-Distributed under the **MIT License**. Created with ❤️ by Mr-Charvaka.
+Distributed under the **MIT License**. Created with ❤️ by Mr-Charvaka/ Aman.
 
 ---
 
