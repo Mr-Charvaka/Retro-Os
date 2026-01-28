@@ -2925,3 +2925,47 @@
         2.  **FAT Chain Linker**: Automatically spans files across multiple clusters and updates the File Allocation Table with correct "Next Cluster" pointers, terminating with `0xFFFF`.
         3.  **Bootstrap Persistence**: It initializes a dummy `TRUTH.DAT` file (300KB) to provide a reserved space on the physical disk for the kernel's self-testing persistence model.
     *   **Deployment**: Automatically called by `build.sh` as the final step of the build pipeline, ensuring every ELF application compiled is ready for execution upon system boot.
+
+### **360. `src/kernel/http.cpp`**
+*   **Detailed Full Summary**:
+    **HTTP/HTTPS Client Engine**.
+    *   **Architecture**: Implements a high-level networking interface that supports both plaintext HTTP (Port 80) and encrypted HTTPS (Port 443). It leverages the **http-parser** library for robust header and body processing.
+    *   **Logic**:
+        - **URL Parsing**: Automatically extracts protocol, hostname, and path from standard URL strings.
+        - **Protocol Auto-Switching**: Detects `https://` prefix and conditionally initializes the **TLS Adapter** for the TCP connection.
+        - **In-place Parsing**: Uses callbacks (`on_header_field`, `on_body`) to populate a `http_response` structure, efficiently handling "chunked" transfer encoding by reassembling data in-place when possible.
+    *   **TCP Bridge**: Directly interacts with the kernel's TCP TCB (Task Control Block) and performs non-blocking polls (`net_poll`, `schedule`) during the handshake and data transfer phases.
+
+### **361. `src/kernel/tls_adapter.cpp`**
+*   **Detailed Full Summary**:
+    **mbedTLS Integration Layer**.
+    *   **Purpose**: Acts as a bridge between the heavyweight mbedTLS library and the Retro-OS kernel's native TCP stack.
+    *   **Context Management**: Defines a `TLSContext` that encapsulates the SSL context, configuration, entropy sources, and DRBG (Deterministic Random Bit Generator) states.
+    *   **I/O Callbacks**: Implements `tls_send_cb` and `tls_recv_cb`, which redirect mbedTLS internal read/write operations to the kernel's `tcp_send_data` and `tcp_read_data` functions.
+    *   **Handshake Logic**: Manages the complex state machine of the TLS handshake, handling `WANT_READ` states by yielding the CPU until networking packets arrive, ensuring a responsive system during high-latency connections.
+
+### **362. `src/kernel/mbedtls_glue.cpp`**
+*   **Detailed Full Summary**:
+    **External Portability & Freestanding Stubs**.
+    *   **Role**: Provides the "Standard Library" environment mbedTLS expects, but implemented using kernel primitives.
+    *   **Memory Hooks**: Redirects `calloc` and `free` to `kmalloc` and `kfree`, ensuring mbedTLS uses the buddy allocator/slab systems.
+    *   **Platform Stubs**: Implements dummy `printf` and `snprintf` logging to the serial port and provides a basic `mbedtls_platform_entropy_poll` that uses the system timer as a seed (to be replaced with RDRAND for production security).
+    *   **Lifecycle**: Handles `mbedtls_platform_exit` requests by logging and entering a safe halt state, preventing library-level crashes from rebooting the whole kernel.
+
+### **363. `src/kernel/socket.cpp`**
+*   **Detailed Full Summary**:
+    **POSIX-Style Socket API**.
+    *   **Architecture**: Provides a comprehensive implementation of the Berkeley Sockets API, supporting both local **AF_UNIX** (for IPC) and internet **AF_INET** (for networking).
+    *   **VFS Integration**: Bridges sockets into the Virtual File System. A socket is represented as a file descriptor, allowing processes to use standard `read()`, `write()`, and `close()` on network connections.
+    *   **State Management**: Tracks connection states (FREE, BOUND, LISTENING, CONNECTED) and manages a `backlog` queue for incoming connection requests.
+    *   **Blocking I/O**: Implements local process sleep/wake logic. If a socket has no data, the `read()` call marks the current process as `WAITING` and yields, only to be awakened by the `tcp_stack` or a `write()` from the peer.
+
+### **364. `src/kernel/dhcp.cpp`**
+*   **Detailed Full Summary**:
+    **Dynamic IP Configuration Protocol**.
+    *   **Mechanism**: Implements the DHCP state machine (Discover, Offer, Request, ACK) to automatically configure the OS with an IP address, subnet mask, gateway, and DNS server upon boot.
+
+### **365. `src/kernel/dns.cpp`**
+*   **Detailed Full Summary**:
+    **Domain Name Resolver**.
+    *   **Logic**: Provides synchronous DNS resolution by crafting UDP packets to 8.8.8.8. It includes a basic cache mechanism and supports parsing multiple RR (Resource Record) types from the response stream.

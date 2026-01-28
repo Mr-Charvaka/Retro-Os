@@ -12,8 +12,10 @@
 
 - **NETWORKING**
   - [Ethernet](REPORT?id=_339-srckernele1000cpp)
-  - [TCP/IP](REPORT?id=_324-srckerneltaskmodelcpp)
-  - [HTTP/TLS](REPORT?id=_274-srckernelhttp_clientcpp)
+  - [TCP/IP Stack](REPORT?id=_363-srckernelsocketcpp)
+  - [HTTP & HTTPS](REPORT?id=_360-srckernelhttpcpp)
+  - [TLS Core](REPORT?id=_361-srckerneltls_adaptercpp)
+  - [DNS Resolver](REPORT?id=_365-srckerneldnscpp)
 
 - **GRAPHICS**
   - [Compositor](REPORT?id=_283-srckernelkernel_bridgecpp)
