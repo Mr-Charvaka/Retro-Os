@@ -19,152 +19,206 @@
             /* VS Code / 100xDevs Dark Theme Palette */
             --base-font-family: 'Inter', sans-serif;
             --theme-color: #007acc;
-            /* VS Code Blue */
-            --sidebar-width: 290px;
-            --content-max-width: 1000px;
+            --sidebar-width: 280px;
+            --content-max-width: 1100px;
 
             /* Backgrounds */
-            --base-background: #1e1e1e;
-            /* VS Code Main BG */
-            --sidebar-background: #252526;
-            /* VS Code Sidebar BG */
+            --base-background: #111111;
+            /* Deep Black/Grey */
+            --sidebar-background: #1a1a1a;
+            /* Sidebar Grey */
 
             /* Text Colors */
-            --base-color: #cccccc;
+            --base-color: #d4d4d4;
             --heading-color: #ffffff;
-            --sidebar-nav-link-color: #969696;
-            --sidebar-nav-link-color--active: #ffffff;
+            --sidebar-nav-link-color: #999999;
+            --sidebar-nav-link-color--active: #007acc;
 
             /* Code Styling */
             --code-font-family: 'JetBrains Mono', monospace;
             --code-theme-background: #000000;
-            --code-inline-background: #333333;
-            --code-inline-color: #4fc1ff;
-
-            /* Borders */
-            --sidebar-border-color: #333333;
-            --hr-border-color: #333333;
+            --code-inline-background: #2a2d2e;
+            --code-inline-color: #9cdcfe;
         }
 
-        /* Premium Aesthetics Overrides */
+        /* GLOBAL AESTHETICS */
+        body {
+            background-color: var(--base-background);
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* SIDEBAR GLASSMORPISM & VS CODE FEEL */
         .sidebar {
-            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
+            background-color: var(--sidebar-background) !important;
+            border-right: 1px solid #333 !important;
+            padding-top: 20px;
         }
 
         .sidebar-nav strong {
             display: block;
-            margin-top: 2rem;
-            margin-bottom: 0.8rem;
+            margin-top: 1.8rem;
+            margin-bottom: 0.6rem;
             padding: 0 20px;
-            font-size: 0.7rem;
-            font-weight: 700;
+            font-size: 0.65rem;
+            font-weight: 800;
             text-transform: uppercase;
-            letter-spacing: 0.1em;
-            color: #6a6a6a;
+            letter-spacing: 0.12em;
+            color: #565656;
+        }
+
+        .sidebar-nav li a {
+            font-size: 0.9rem;
+            padding: 8px 20px;
+            color: var(--sidebar-nav-link-color);
+            transition: all 0.2s ease;
+        }
+
+        .sidebar-nav li a:hover {
+            background: rgba(255, 255, 255, 0.03);
+            color: #fff;
+        }
+
+        .sidebar-nav li.active>a {
+            background: rgba(0, 122, 204, 0.1);
+            border-right: 3px solid var(--theme-color);
+            color: #fff !important;
+            font-weight: 600;
+        }
+
+        /* CONTENT AREA */
+        .markdown-section {
+            padding-top: 50px !important;
         }
 
         .markdown-section h1 {
             font-weight: 800;
-            letter-spacing: -0.02em;
+            font-size: 2.8rem;
+            margin-bottom: 1.5rem;
+            color: #fff;
         }
 
         .markdown-section h2 {
-            border-bottom: 1px solid #333333;
-            padding-bottom: 0.5rem;
-            margin-top: 3.5rem;
+            border-bottom: 1px solid #2d2d2d;
+            padding-bottom: 10px;
+            margin-top: 4rem;
+            color: #fff;
             font-weight: 700;
         }
 
-        /* Active sidebar item highlighting */
-        .sidebar-nav li.active>a {
-            background: rgba(255, 255, 255, 0.05);
-            border-right: 2px solid var(--theme-color);
-            color: #fff !important;
+        .markdown-section h3 {
+            color: #569cd6;
+            font-weight: 600;
+            margin-top: 2rem;
         }
 
-        /* Scrollbar */
+        .markdown-section p,
+        .markdown-section li {
+            line-height: 1.8;
+            color: #cccccc;
+        }
+
+        /* SEARCH BAR CUSTOMIZATION */
+        .search input {
+            background: #2a2d2e !important;
+            border: 1px solid #3c3c3c !important;
+            color: #fff !important;
+            border-radius: 6px !important;
+            margin: 10px 15px !important;
+            padding: 10px 15px !important;
+            box-shadow: none !important;
+        }
+
+        /* CODE BLOCK ENHANCEMENT */
+        pre[class*="language-"] {
+            background: #0d0d0d !important;
+            border: 1px solid #2d2d2d !important;
+            border-radius: 12px !important;
+            padding: 20px !important;
+            margin: 1.5em 0 !important;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4) !important;
+        }
+
+        /* SCROLLBAR */
         ::-webkit-scrollbar {
-            width: 10px;
-            height: 10px;
+            width: 12px;
         }
 
         ::-webkit-scrollbar-track {
-            background: #1e1e1e;
+            background: #111;
         }
 
         ::-webkit-scrollbar-thumb {
-            background: #3fe3fe3;
-            border-radius: 5px;
-            border: 2px solid #1e1e1e;
+            background: #333;
+            border-radius: 6px;
+            border: 3px solid #111;
         }
 
         ::-webkit-scrollbar-thumb:hover {
-            background: #4a4a4a;
+            background: #444;
         }
 
-        /* Code Block Enhancement */
-        pre[class*="language-"] {
-            border: 1px solid #333333;
-            border-radius: 8px !important;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        /* GITHUB CORNER */
+        .github-corner svg {
+            fill: #007acc;
+            color: #111;
         }
 
-        /* Transition */
-        body {
-            transition: background-color 0.3s ease;
+        /* PAGINATION */
+        .docsify-pagination-container {
+            margin-top: 80px;
+            border-top: 1px solid #2d2d2d !important;
         }
 
-        /* Search Bar Aesthetic */
-        .search input {
-            background: #3c3c3c !important;
-            border: 1px solid #555 !important;
-            color: #fff !important;
-            border-radius: 4px !important;
+        @media screen and (max-width: 768px) {
+            .sidebar {
+                background-color: #111 !important;
+            }
         }
     </style>
 </head>
 
 <body>
-    <div id="app">Loading Dashboard...</div>
+    <div id="app">Loading Retro-OS Universe...</div>
 
     <script>
         window.$docsify = {
-            name: '<div style="font-weight:800; font-size:1.3rem; letter-spacing:-0.5px; color:#fff;">RETRO<span style="color:#007acc;">OS</span></div>',
+            name: '<div style="font-weight:800; font-size:1.4rem; letter-spacing:-0.5px; color:#fff;">RETRO<span style="color:#007acc;">OS</span></div>',
             repo: 'https://github.com/Mr-Charvaka/Retro-Os',
 
-            // Homepage behavior
-            homepage: 'README.md', // Default launch page
-
-            // Sidebar Config
+            // CRITICAL SIDEBAR FIX
             loadSidebar: true,
-            alias: {
-                '/.*/_sidebar.md': '/_sidebar.md'
-            },
-            subMaxLevel: 2,
+            autoHeader: false,
+            mergeNavbar: true,
+            maxLevel: 4,
+            subMaxLevel: 3,
 
-            // Navigation
+            // Homepage
+            homepage: 'README.md',
+
+            // Aesthetics
             auto2top: true,
             executeScript: true,
-            mergeNavbar: true,
 
             // Plugins
             search: {
                 maxAge: 86400000,
                 paths: 'auto',
-                placeholder: 'Search files & protocols...',
-                noData: 'No matches found',
+                placeholder: 'Search documentation...',
+                noData: 'No results found',
                 depth: 6
             },
 
             copyCode: {
-                buttonText: 'Copy',
+                buttonText: '<i class="fa fa-copy"></i> Copy',
                 errorText: 'Error',
-                successText: 'Done'
+                successText: 'Copied!'
             },
 
             pagination: {
-                previousText: 'BACK',
+                previousText: 'PREVIOUS',
                 nextText: 'NEXT',
+                crossChapter: true,
+                crossChapterText: true,
             }
         }
     </script>
@@ -179,13 +233,12 @@
     <script src="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/js/docsify-themeable.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/docsify/lib/plugins/zoom-image.min.js"></script>
 
-    <!-- Code Highlighting -->
-    <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-c.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-cpp.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-nasm.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-python.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
+    <!-- Code Highlighting (PrismJS) -->
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-c.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-cpp.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-nasm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
 </body>
 
 </html>
