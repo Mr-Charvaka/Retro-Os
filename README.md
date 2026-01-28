@@ -92,9 +92,16 @@ chmod +x build.sh
 *You should see a "Build Successful: os.img" message.*
 
 ### Step 5: Launch the OS
-Run the OS using QEMU:
+
+#### Option A: Standard Run (No Network)
 ```bash
 qemu-system-i386 -drive format=raw,file=os.img -serial stdio -m 512
+```
+
+#### Option B: Run with Internet Access (Recommended)
+This enables the E1000 network driver and allows the OS to use DNS, DHCP, and HTTPS.
+```bash
+qemu-system-i386 -drive format=raw,file=os.img -serial stdio -m 512 -net nic,model=e1000 -net user
 ```
 
 ---
