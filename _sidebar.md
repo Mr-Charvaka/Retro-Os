@@ -1,5 +1,7 @@
 
-- [**Introduction**](REPORT)
+- [**🏠 Home**](README.md)
+- [**📖 Technical Report**](REPORT.md)
+
 - **Kernel Core**
   - [Memory Management](REPORT?id=_334-srckernelpmmcpp)
   - [Paging & Demand Paging](REPORT?id=_335-srckernelpagingcpp)

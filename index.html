@@ -3,103 +3,140 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Retro-OS Technical Analysis</title>
+    <title>Retro-OS | Documentation</title>
     <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
 
-    <!-- Font: Inter (Used by 100xDevs/Modern Docs) -->
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+    <!-- Font: Inter & JetBrains Mono for Code -->
+    <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
 
-    <!-- Theme: Docsify Themeable (More customizable) -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/css/theme-simple.css">
+    <!-- Theme: Docsify Themeable (Dark Mode) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/css/theme-simple-dark.css">
 
     <style>
         :root {
-            /* 100xDevs / Modern Tech Aesthetics */
-            --base-font-family: 'Inter', system-ui, -apple-system, sans-serif;
-            --theme-color: #2563eb;
-            /* Modern Blue */
-            --sidebar-width: 280px;
+            /* VS Code / 100xDevs Dark Theme Palette */
+            --base-font-family: 'Inter', sans-serif;
+            --theme-color: #007acc;
+            /* VS Code Blue */
+            --sidebar-width: 290px;
             --content-max-width: 1000px;
 
-            /* Sidebar styling */
-            --sidebar-background: #f8fafc;
-            --sidebar-nav-link-color: #475569;
-            --sidebar-nav-link-color--active: #2563eb;
-            --sidebar-nav-link-font-weight--active: 600;
+            /* Backgrounds */
+            --base-background: #1e1e1e;
+            /* VS Code Main BG */
+            --sidebar-background: #252526;
+            /* VS Code Sidebar BG */
 
-            /* Typography */
-            --heading-h1-font-weight: 800;
-            --heading-h2-font-weight: 700;
-            --code-font-family: 'Fira Code', 'Cascadia Code', monospace;
-            --code-theme-background: #1e293b;
-            --code-inline-background: #f1f5f9;
-            --code-inline-color: #e11d48;
+            /* Text Colors */
+            --base-color: #cccccc;
+            --heading-color: #ffffff;
+            --sidebar-nav-link-color: #969696;
+            --sidebar-nav-link-color--active: #ffffff;
+
+            /* Code Styling */
+            --code-font-family: 'JetBrains Mono', monospace;
+            --code-theme-background: #000000;
+            --code-inline-background: #333333;
+            --code-inline-color: #4fc1ff;
+
+            /* Borders */
+            --sidebar-border-color: #333333;
+            --hr-border-color: #333333;
         }
 
-        /* Custom CSS Overrides for 100xDevs look */
+        /* Premium Aesthetics Overrides */
         .sidebar {
-            border-right: 1px solid #e2e8f0;
+            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
         }
 
         .sidebar-nav strong {
             display: block;
-            margin-top: 1.5rem;
-            margin-bottom: 0.5rem;
-            padding: 0 15px;
-            font-size: 0.75rem;
+            margin-top: 2rem;
+            margin-bottom: 0.8rem;
+            padding: 0 20px;
+            font-size: 0.7rem;
+            font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: #94a3b8;
+            letter-spacing: 0.1em;
+            color: #6a6a6a;
         }
 
         .markdown-section h1 {
-            font-size: 2.5rem;
-            margin-bottom: 2rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
         }
 
         .markdown-section h2 {
-            border-bottom: 1px solid #e2e8f0;
+            border-bottom: 1px solid #333333;
             padding-bottom: 0.5rem;
-            margin-top: 3rem;
+            margin-top: 3.5rem;
+            font-weight: 700;
         }
 
-        /* Smooth Scroll */
-        html {
-            scroll-behavior: smooth;
+        /* Active sidebar item highlighting */
+        .sidebar-nav li.active>a {
+            background: rgba(255, 255, 255, 0.05);
+            border-right: 2px solid var(--theme-color);
+            color: #fff !important;
         }
 
-        /* Custom Scrollbar */
+        /* Scrollbar */
         ::-webkit-scrollbar {
-            width: 8px;
+            width: 10px;
+            height: 10px;
         }
 
         ::-webkit-scrollbar-track {
-            background: #f1f5f9;
+            background: #1e1e1e;
         }
 
         ::-webkit-scrollbar-thumb {
-            background: #cbd5e1;
-            border-radius: 4px;
+            background: #3fe3fe3;
+            border-radius: 5px;
+            border: 2px solid #1e1e1e;
         }
 
         ::-webkit-scrollbar-thumb:hover {
-            background: #94a3b8;
+            background: #4a4a4a;
+        }
+
+        /* Code Block Enhancement */
+        pre[class*="language-"] {
+            border: 1px solid #333333;
+            border-radius: 8px !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        }
+
+        /* Transition */
+        body {
+            transition: background-color 0.3s ease;
+        }
+
+        /* Search Bar Aesthetic */
+        .search input {
+            background: #3c3c3c !important;
+            border: 1px solid #555 !important;
+            color: #fff !important;
+            border-radius: 4px !important;
         }
     </style>
 </head>
 
 <body>
-    <div id="app">Loading Retro-OS Documentation...</div>
+    <div id="app">Loading Dashboard...</div>
 
     <script>
         window.$docsify = {
-            name: '<div style="font-weight:800; font-size:1.2rem; color:#1e293b;">RETRO<span style="color:#2563eb;">OS</span></div>',
+            name: '<div style="font-weight:800; font-size:1.3rem; letter-spacing:-0.5px; color:#fff;">RETRO<span style="color:#007acc;">OS</span></div>',
             repo: 'https://github.com/Mr-Charvaka/Retro-Os',
+
+            // Homepage behavior
+            homepage: 'README.md', // Default launch page
 
             // Sidebar Config
             loadSidebar: true,
-            homepage: 'REPORT.md',
             alias: {
                 '/.*/_sidebar.md': '/_sidebar.md'
             },
@@ -114,22 +151,20 @@
             search: {
                 maxAge: 86400000,
                 paths: 'auto',
-                placeholder: 'Search documentation...',
-                noData: 'No results found',
+                placeholder: 'Search files & protocols...',
+                noData: 'No matches found',
                 depth: 6
             },
 
             copyCode: {
                 buttonText: 'Copy',
                 errorText: 'Error',
-                successText: 'Copied'
+                successText: 'Done'
             },
 
             pagination: {
-                previousText: 'PREV',
+                previousText: 'BACK',
                 nextText: 'NEXT',
-                crossChapter: true,
-                crossChapterText: true,
             }
         }
     </script>
@@ -150,6 +185,7 @@
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-nasm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-python.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
 </body>
 
 </html>
