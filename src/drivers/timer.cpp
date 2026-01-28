@@ -1,0 +1,54 @@
+#include "../drivers/vga.h"
+#include "../include/io.h"
+#include "../include/irq.h"
+#include "../include/string.h"
+#include "../include/types.h"
+#include "../kernel/process.h"
+#include "serial.h"
+
+uint32_t tick = 0;
+
+static void timer_callback(registers_t *regs) {
+  tick++;
+
+  // Wake up sleeping processes
+  process_t *p = ready_queue;
+  if (p) {
+    process_t *start = p;
+    do {
+      if (p->state == PROCESS_SLEEPING && tick >= p->sleep_until) {
+        p->state = PROCESS_READY;
+      }
+      p = p->next;
+    } while (p && p != start);
+  }
+
+  schedule();
+}
+
+#include "../kernel/apic.h"
+
+void init_timer(uint32_t frequency) {
+  // Register timer handler
+  register_interrupt_handler(32, timer_callback); // IRQ0 = IDT 32
+  register_interrupt_handler(34,
+                             timer_callback); // IRQ0 -> GSI 2 Override (IDT 34)
+
+  // Unmask IRQ0
+  ioapic_set_mask(0, false);
+
+  // The value we send to the PIT is the value to divide it's input clock
+  // (1193180 Hz) by, to get our required frequency.
+  uint32_t divisor = 1193180 / frequency;
+
+  // Send the command byte.
+  outb(0x43, 0x36);
+
+  // Divisor has to be sent byte-wise, so split here into upper/lower bytes.
+  uint8_t l = (uint8_t)(divisor & 0xFF);
+  uint8_t h = (uint8_t)((divisor >> 8) & 0xFF);
+
+  // Send the frequency divisor.
+  outb(0x40, l);
+  outb(0x40, h);
+}

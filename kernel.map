@@ -1,0 +1,42 @@
+
+There are no discarded input sections
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+*default*        0x00000000         0xffffffff
+
+Linker script and memory map
+
+                0xc0010000                        . = 0xc0010000
+
+.text           0xc0010000     0x1000 load address 0x00010000
+                0xc0010000                        _text_start = .
+ *(.text)
+ .text          0xc0010000       0x4c src/boot/kernel_entry.o
+                0xc0010000                _start
+                0xc0011000                        . = ALIGN (0x1000)
+ *fill*         0xc001004c      0xfb4 
+                0xc0011000                        _text_end = .
+
+.rodata         0xc0011000        0x0 load address 0x00011000
+                0xc0011000                        _rodata_start = .
+ *(.rodata)
+                0xc0011000                        . = ALIGN (0x1000)
+                0xc0011000                        _rodata_end = .
+
+.data           0xc0011000     0x2000 load address 0x00011000
+                0xc0011000                        _data_start = .
+ *(.data)
+ .data          0xc0011000     0x2000 src/boot/kernel_entry.o
+                0xc0013000                        . = ALIGN (0x1000)
+                0xc0013000                        _data_end = .
+
+.bss            0xc0013000     0x4000 load address 0x00013000
+ *(.bss)
+ .bss           0xc0013000     0x4000 src/boot/kernel_entry.o
+ *(COMMON)
+                0xc0017000                        . = ALIGN (0x1000)
+                0xc0017000                        _kernel_end = .
+LOAD src/boot/kernel_entry.o
+OUTPUT(src/kernel/kernel.bin binary)
