@@ -1,38 +1,154 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-  <meta charset="UTF-8">
-  <title>Retro-OS Technical Report</title>
-  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
-  <meta name="description" content="Detailed technical analysis of the Retro-OS Kernel and Ecosystem.">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
-  <!-- Theme: Simple and Clean -->
-  <link rel="stylesheet" href="//cdn.jsdelivr.net/npm/docsify@4/lib/themes/vue.css">
-  <style>
-    :root {
-      --theme-color: #2c3e50;
-    }
-    .markdown-section {
-      max-width: 900px;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <title>Retro-OS Technical Analysis</title>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
+
+    <!-- Font: Inter (Used by 100xDevs/Modern Docs) -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+
+    <!-- Theme: Docsify Themeable (More customizable) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/css/theme-simple.css">
+
+    <style>
+        :root {
+            /* 100xDevs / Modern Tech Aesthetics */
+            --base-font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            --theme-color: #2563eb;
+            /* Modern Blue */
+            --sidebar-width: 280px;
+            --content-max-width: 1000px;
+
+            /* Sidebar styling */
+            --sidebar-background: #f8fafc;
+            --sidebar-nav-link-color: #475569;
+            --sidebar-nav-link-color--active: #2563eb;
+            --sidebar-nav-link-font-weight--active: 600;
+
+            /* Typography */
+            --heading-h1-font-weight: 800;
+            --heading-h2-font-weight: 700;
+            --code-font-family: 'Fira Code', 'Cascadia Code', monospace;
+            --code-theme-background: #1e293b;
+            --code-inline-background: #f1f5f9;
+            --code-inline-color: #e11d48;
+        }
+
+        /* Custom CSS Overrides for 100xDevs look */
+        .sidebar {
+            border-right: 1px solid #e2e8f0;
+        }
+
+        .sidebar-nav strong {
+            display: block;
+            margin-top: 1.5rem;
+            margin-bottom: 0.5rem;
+            padding: 0 15px;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #94a3b8;
+        }
+
+        .markdown-section h1 {
+            font-size: 2.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .markdown-section h2 {
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 0.5rem;
+            margin-top: 3rem;
+        }
+
+        /* Smooth Scroll */
+        html {
+            scroll-behavior: smooth;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+    </style>
 </head>
+
 <body>
-  <div id="app">Loading technical documentation...</div>
-  <script>
-    window.$docsify = {
-      name: 'Retro-OS Documentation',
-      repo: '', // You can add your github repo link here later
-      loadSidebar: false, // Set to true if you want to split the report into multiple files later
-      subMaxLevel: 3,
-      homepage: 'REPORT.md', // This tells Docsify to use your report as the main page
-      auto2top: true,
-      search: 'auto', // Enable search functionality
-    }
-  </script>
-  <!-- Docsify v4 -->
-  <script src="//cdn.jsdelivr.net/npm/docsify@4"></script>
-  <script src="//cdn.jsdelivr.net/npm/docsify/lib/plugins/search.min.js"></script>
-  <script src="//cdn.jsdelivr.net/npm/docsify/lib/plugins/zoom-image.min.js"></script>
+    <div id="app">Loading Retro-OS Documentation...</div>
+
+    <script>
+        window.$docsify = {
+            name: '<div style="font-weight:800; font-size:1.2rem; color:#1e293b;">RETRO<span style="color:#2563eb;">OS</span></div>',
+            repo: 'https://github.com/Mr-Charvaka/Retro-Os',
+
+            // Sidebar Config
+            loadSidebar: true,
+            alias: {
+                '/.*/_sidebar.md': '/_sidebar.md'
+            },
+            subMaxLevel: 2,
+
+            // Navigation
+            auto2top: true,
+            executeScript: true,
+            mergeNavbar: true,
+
+            // Plugins
+            search: {
+                maxAge: 86400000,
+                paths: 'auto',
+                placeholder: 'Search documentation...',
+                noData: 'No results found',
+                depth: 6
+            },
+
+            copyCode: {
+                buttonText: 'Copy',
+                errorText: 'Error',
+                successText: 'Copied'
+            },
+
+            pagination: {
+                previousText: 'PREV',
+                nextText: 'NEXT',
+                crossChapter: true,
+                crossChapterText: true,
+            }
+        }
+    </script>
+
+    <!-- Docsify Core -->
+    <script src="https://cdn.jsdelivr.net/npm/docsify@4"></script>
+
+    <!-- Plugins -->
+    <script src="https://cdn.jsdelivr.net/npm/docsify/lib/plugins/search.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify-copy-code@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify-pagination@2/dist/docsify-pagination.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/js/docsify-themeable.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify/lib/plugins/zoom-image.min.js"></script>
+
+    <!-- Code Highlighting -->
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-c.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-cpp.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-nasm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-python.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
 </body>
+
 </html>
