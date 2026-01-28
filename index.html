@@ -3,222 +3,238 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Retro-OS | Documentation</title>
+    <title>Retro-OS | The Core Ledger</title>
     <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
 
-    <!-- Font: Inter & JetBrains Mono for Code -->
+    <!-- Premium Fonts -->
     <link rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+        href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap">
 
-    <!-- Theme: Docsify Themeable (Dark Mode) -->
+    <!-- Docsify Themeable (Dark Mode Base) -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/css/theme-simple-dark.css">
 
     <style>
         :root {
-            /* VS Code / 100xDevs Dark Theme Palette */
-            --base-font-family: 'Inter', sans-serif;
-            --theme-color: #007acc;
-            --sidebar-width: 280px;
-            --content-max-width: 1100px;
+            /* VANTA BLACK THEME */
+            --base-font-family: 'Geist', sans-serif;
+            --theme-color: #ffffff;
+            /* Contrast highlights */
+            --sidebar-width: 320px;
+            --content-max-width: 900px;
 
             /* Backgrounds */
-            --base-background: #111111;
-            /* Deep Black/Grey */
-            --sidebar-background: #1a1a1a;
-            /* Sidebar Grey */
+            --base-background: #000000;
+            /* PURE VANTA BLACK */
+            --sidebar-background: #000000;
 
-            /* Text Colors */
-            --base-color: #d4d4d4;
+            /* Typography */
+            --base-color: #888888;
             --heading-color: #ffffff;
-            --sidebar-nav-link-color: #999999;
-            --sidebar-nav-link-color--active: #007acc;
+            --strong-color: #ffffff;
 
-            /* Code Styling */
-            --code-font-family: 'JetBrains Mono', monospace;
-            --code-theme-background: #000000;
-            --code-inline-background: #2a2d2e;
-            --code-inline-color: #9cdcfe;
+            /* Borders */
+            --border-color: #1a1a1a;
+            --sidebar-border-color: #1a1a1a;
+
+            /* Code */
+            --code-font-family: 'Geist Mono', monospace;
+            --code-theme-background: #050505;
+            --code-inline-background: #111111;
+            --code-inline-color: #ffffff;
         }
 
-        /* GLOBAL AESTHETICS */
+        /* PREMIUM OVERRIDES */
         body {
-            background-color: var(--base-background);
-            -webkit-font-smoothing: antialiased;
+            background-color: #000000 !important;
+            font-weight: 400;
+            letter-spacing: -0.01em;
         }
 
-        /* SIDEBAR GLASSMORPISM & VS CODE FEEL */
         .sidebar {
-            background-color: var(--sidebar-background) !important;
-            border-right: 1px solid #333 !important;
-            padding-top: 20px;
+            background: #000000 !important;
+            border-right: 1px solid var(--border-color) !important;
+            transition: all 0.3s ease;
+        }
+
+        .sidebar-nav {
+            padding: 40px 25px !important;
         }
 
         .sidebar-nav strong {
-            display: block;
-            margin-top: 1.8rem;
-            margin-bottom: 0.6rem;
-            padding: 0 20px;
-            font-size: 0.65rem;
-            font-weight: 800;
+            color: #444444 !important;
+            font-size: 0.65rem !important;
+            font-weight: 700 !important;
+            letter-spacing: 0.2rem !important;
             text-transform: uppercase;
-            letter-spacing: 0.12em;
-            color: #565656;
+            margin-top: 2.5rem !important;
+            display: block;
+        }
+
+        .sidebar-nav ul {
+            margin: 12px 0 !important;
         }
 
         .sidebar-nav li a {
-            font-size: 0.9rem;
-            padding: 8px 20px;
-            color: var(--sidebar-nav-link-color);
-            transition: all 0.2s ease;
+            color: #666666 !important;
+            border: none !important;
+            font-size: 0.95rem !important;
+            padding: 6px 0 !important;
+            transition: color 0.2s ease;
+            font-weight: 500;
         }
 
         .sidebar-nav li a:hover {
-            background: rgba(255, 255, 255, 0.03);
-            color: #fff;
+            color: #ffffff !important;
         }
 
         .sidebar-nav li.active>a {
-            background: rgba(0, 122, 204, 0.1);
-            border-right: 3px solid var(--theme-color);
-            color: #fff !important;
+            color: #ffffff !important;
             font-weight: 600;
+        }
+
+        /* SEARCH BAR (Minimalist) */
+        .search {
+            padding: 0 25px !important;
+            margin-bottom: 20px !important;
+        }
+
+        .search input {
+            background: #0a0a0a !important;
+            border: 1px solid #1a1a1a !important;
+            color: #fff !important;
+            border-radius: 4px !important;
+            font-family: inherit !important;
+            font-size: 0.85rem !important;
+            padding: 12px !important;
         }
 
         /* CONTENT AREA */
         .markdown-section {
-            padding-top: 50px !important;
+            padding: 100px 40px !important;
         }
 
         .markdown-section h1 {
             font-weight: 800;
-            font-size: 2.8rem;
-            margin-bottom: 1.5rem;
-            color: #fff;
+            font-size: 3.5rem !important;
+            letter-spacing: -0.05em !important;
+            margin-bottom: 2rem;
+            color: #ffffff !important;
         }
 
         .markdown-section h2 {
-            border-bottom: 1px solid #2d2d2d;
-            padding-bottom: 10px;
-            margin-top: 4rem;
-            color: #fff;
-            font-weight: 700;
-        }
-
-        .markdown-section h3 {
-            color: #569cd6;
-            font-weight: 600;
-            margin-top: 2rem;
+            font-size: 1.8rem !important;
+            font-weight: 700 !important;
+            letter-spacing: -0.03em !important;
+            margin-top: 5rem !important;
+            border: none !important;
+            color: #ffffff !important;
         }
 
         .markdown-section p,
         .markdown-section li {
+            font-size: 1.1rem;
             line-height: 1.8;
-            color: #cccccc;
+            color: #a1a1a1;
         }
 
-        /* SEARCH BAR CUSTOMIZATION */
-        .search input {
-            background: #2a2d2e !important;
-            border: 1px solid #3c3c3c !important;
-            color: #fff !important;
-            border-radius: 6px !important;
-            margin: 10px 15px !important;
-            padding: 10px 15px !important;
-            box-shadow: none !important;
+        .markdown-section strong {
+            color: #ffffff;
+            font-weight: 600;
         }
 
-        /* CODE BLOCK ENHANCEMENT */
+        /* CODE BLOCKS */
         pre[class*="language-"] {
-            background: #0d0d0d !important;
-            border: 1px solid #2d2d2d !important;
-            border-radius: 12px !important;
-            padding: 20px !important;
-            margin: 1.5em 0 !important;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4) !important;
+            background: #050505 !important;
+            border: 1px solid #151515 !important;
+            border-radius: 4px !important;
+            padding: 30px !important;
+            margin: 3rem 0 !important;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
         }
 
-        /* SCROLLBAR */
+        code {
+            font-family: 'Geist Mono', monospace !important;
+        }
+
+        /* SCROLLBAR (Minimalist) */
         ::-webkit-scrollbar {
-            width: 12px;
+            width: 5px;
         }
 
         ::-webkit-scrollbar-track {
-            background: #111;
+            background: #000;
         }
 
         ::-webkit-scrollbar-thumb {
-            background: #333;
-            border-radius: 6px;
-            border: 3px solid #111;
+            background: #1a1a1a;
         }
 
         ::-webkit-scrollbar-thumb:hover {
-            background: #444;
-        }
-
-        /* GITHUB CORNER */
-        .github-corner svg {
-            fill: #007acc;
-            color: #111;
+            background: #333;
         }
 
         /* PAGINATION */
         .docsify-pagination-container {
-            margin-top: 80px;
-            border-top: 1px solid #2d2d2d !important;
+            margin-top: 100px;
+            border-top: 1px solid #111 !important;
+            padding-top: 40px !important;
         }
 
-        @media screen and (max-width: 768px) {
-            .sidebar {
-                background-color: #111 !important;
-            }
+        .pagination-item-title {
+            font-size: 1.2rem !important;
+            font-weight: 600 !important;
+            color: #fff !important;
+        }
+
+        /* LOADING SCREEN */
+        #app:empty::before {
+            content: 'RETRO-OS CORE';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-family: 'Geist Mono', monospace;
+            font-weight: 700;
+            letter-spacing: 0.5em;
+            color: #333;
+        }
+
+        /* GITHUB RIBBON */
+        .github-corner svg {
+            fill: #222 !important;
+            color: #000 !important;
         }
     </style>
 </head>
 
 <body>
-    <div id="app">Loading Retro-OS Universe...</div>
+    <div id="app"></div>
 
     <script>
         window.$docsify = {
-            name: '<div style="font-weight:800; font-size:1.4rem; letter-spacing:-0.5px; color:#fff;">RETRO<span style="color:#007acc;">OS</span></div>',
+            name: '<div style="font-weight:900; font-size:1.1rem; letter-spacing:0.4em; color:#fff; text-transform:uppercase;">Retro-OS</div>',
             repo: 'https://github.com/Mr-Charvaka/Retro-Os',
 
-            // CRITICAL SIDEBAR FIX
             loadSidebar: true,
-            autoHeader: false,
-            mergeNavbar: true,
-            maxLevel: 4,
-            subMaxLevel: 3,
-
-            // Homepage
             homepage: 'README.md',
 
-            // Aesthetics
             auto2top: true,
             executeScript: true,
+            subMaxLevel: 0, // Keep sidebar extremely clean
 
-            // Plugins
             search: {
                 maxAge: 86400000,
                 paths: 'auto',
-                placeholder: 'Search documentation...',
-                noData: 'No results found',
+                placeholder: 'Search core engine...',
+                noData: 'Void',
                 depth: 6
             },
 
             copyCode: {
-                buttonText: '<i class="fa fa-copy"></i> Copy',
-                errorText: 'Error',
-                successText: 'Copied!'
-            },
-
-            pagination: {
-                previousText: 'PREVIOUS',
-                nextText: 'NEXT',
-                crossChapter: true,
-                crossChapterText: true,
+                buttonText: 'COPY',
+                errorText: 'ERROR',
+                successText: 'DONE'
             }
         }
     </script>
@@ -233,12 +249,11 @@
     <script src="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/js/docsify-themeable.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/docsify/lib/plugins/zoom-image.min.js"></script>
 
-    <!-- Code Highlighting (PrismJS) -->
+    <!-- Modern Code Highlighting -->
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-c.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-cpp.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-nasm.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-json.min.js"></script>
 </body>
 
 </html>
