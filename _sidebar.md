@@ -1,6 +1,6 @@
 
-- [**🏠 Home**](README.md)
-- [**📖 Technical Report**](REPORT.md)
+- [**🏠 Home**](/)
+- [**📖 Technical Report**](REPORT)
 
 - **Kernel Core**
   - [Memory Management](REPORT?id=_334-srckernelpmmcpp)
@@ -27,20 +27,20 @@
   - [Terminal Emulator](REPORT?id=_350-appsterminalcpp)
   - [Notepad Text Editor](REPORT?id=_352-appsnotepadcpp)
   - [Shell (sh)](REPORT?id=_347-appsshcpp)
-  - [Standard Utilities (ls, cat, ping)](REPORT?id=_348-appslscpp)
+  - [Standard Utilities](REPORT?id=_348-appslscpp)
 
 - **Hardware Drivers**
   - [ACPI & PCI](REPORT?id=_257-srcdriversacpic)
   - [Storage (ATA & FAT16)](REPORT?id=_263-srcdriversfat16c)
   - [Graphics (BGA/VGA)](REPORT?id=_301-srcdriversbgacpp)
-  - [Input (Keyboard/Mouse)](REPORT?id=_265-srcdriverskeyboardc)
+  - [Input (Kbd/Mouse)](REPORT?id=_265-srcdriverskeyboardc)
 
 - **Models & Testing**
-  - [FileSystem Truth Model](REPORT?id=_319-srckernelfilesystemtruthcpp)
+  - [FileSystem Truth](REPORT?id=_319-srckernelfilesystemtruthcpp)
   - [Execution Model](REPORT?id=_321-srckernelexecutionmodelcpp)
   - [Memory Model](REPORT?id=_323-srckernelmemorymodelcpp)
 
 - **Build System**
   - [Bootloader (MBR)](REPORT?id=_340-srcbootbootasm)
-  - [Image Injection Script](REPORT?id=_359-inject_wallpaperpy)
+  - [Image Injection](REPORT?id=_359-inject_wallpaperpy)
   - [Build Pipeline](REPORT?id=_325-srckernelkernelcpp)
