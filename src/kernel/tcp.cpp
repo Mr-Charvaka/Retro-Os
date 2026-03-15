@@ -162,7 +162,9 @@ extern "C" void ip_send(uint32_t dst_ip, uint8_t protocol, uint8_t *data,
 
 static void tcp_send_segment(tcp_tcb_t *tcb, uint8_t flags, void *data,
                              uint16_t len) {
-  size_t total_len = sizeof(tcp_header_t) + len;
+  bool is_syn = (flags & TCP_SYN) != 0;
+  size_t options_len = is_syn ? 4 : 0; // MSS Option: Tag=2, Len=4, Value=1460
+  size_t total_len = sizeof(tcp_header_t) + options_len + len;
   uint8_t *buffer = (uint8_t *)kmalloc(total_len);
   tcp_header_t *tcp = (tcp_header_t *)buffer;
 
@@ -171,8 +173,16 @@ static void tcp_send_segment(tcp_tcb_t *tcb, uint8_t flags, void *data,
   tcp->dst_port = tcb->remote_port;
   tcp->seq = tcp_htonl(tcb->snd_nxt);
   tcp->ack = tcp_htonl(tcb->rcv_nxt);
-  tcp->offset_reserved = (sizeof(tcp_header_t) / 4) << 4;
+  tcp->offset_reserved = ((sizeof(tcp_header_t) + options_len) / 4) << 4;
   tcp->flags = flags;
+  
+  if (is_syn) {
+      uint8_t* options = buffer + sizeof(tcp_header_t);
+      options[0] = 2; // MSS
+      options[1] = 4; // Length
+      uint16_t mss = tcp_htons(1460);
+      memcpy(options + 2, &mss, 2);
+  }
 
   // Backpressure: Update advertised window based on free space
   uint32_t free_space = tcb->rx_capacity - tcb->rx_len;
@@ -183,7 +193,7 @@ static void tcp_send_segment(tcp_tcb_t *tcb, uint8_t flags, void *data,
   tcp->urgent_ptr = 0;
 
   if (len > 0)
-    memcpy(buffer + sizeof(tcp_header_t), data, len);
+    memcpy(buffer + sizeof(tcp_header_t) + options_len, data, len);
 
   tcp->checksum = tcp_checksum(tcb->local_ip, tcb->remote_ip, tcp, total_len);
   ip_send(tcb->remote_ip, IP_PROTO_TCP, buffer, total_len);
@@ -204,7 +214,7 @@ extern "C" tcp_tcb_t *tcp_connect(uint32_t local_ip, uint16_t local_port,
   if (!tcb)
     return nullptr;
 
-  tcb->local_ip = (local_ip == 0) ? my_ip : local_ip;
+  tcb->local_ip = (local_ip == 0) ? net_get_local_ip() : local_ip;
   tcb->remote_ip = remote_ip;
   tcb->local_port = tcp_htons(local_port);
   tcb->remote_port = tcp_htons(remote_port);
@@ -246,6 +256,11 @@ extern "C" void tcp_handle_packet(uint32_t src_ip, uint32_t dst_ip,
     break;
 
   case TCP_ESTABLISHED:
+    if (tcp->flags & TCP_ACK) {
+        if (seg_ack > tcb->snd_una && seg_ack <= tcb->snd_nxt) {
+            tcb->snd_una = seg_ack;
+        }
+    }
     if (data_len > 0) {
       if (seg_seq == tcb->rcv_nxt) {
         if (tcb->rx_len + data_len <= tcb->rx_capacity) {
@@ -256,6 +271,21 @@ extern "C" void tcp_handle_packet(uint32_t src_ip, uint32_t dst_ip,
         } else {
           serial_log("TCP: RX Buffer Full! Dropping segment.");
         }
+      } else if (seg_seq < tcb->rcv_nxt) {
+          // Duplicate or overlapping data
+          uint32_t overlap = tcb->rcv_nxt - seg_seq;
+          if (data_len > overlap) {
+              uint32_t new_data_len = data_len - overlap;
+              if (tcb->rx_len + new_data_len <= tcb->rx_capacity) {
+                  memcpy(tcb->rx_buffer + tcb->rx_len, data + overlap, new_data_len);
+                  tcb->rx_len += new_data_len;
+                  tcb->rcv_nxt += new_data_len;
+              }
+          }
+          tcp_send_segment(tcb, TCP_ACK, nullptr, 0); // Always ACK even if duplicate
+      } else {
+          // Future data (Out of order) - For now we drop, but we SHOULD ACK current rcv_nxt
+          tcp_send_segment(tcb, TCP_ACK, nullptr, 0);
       }
     }
     if (tcp->flags & TCP_FIN) {
