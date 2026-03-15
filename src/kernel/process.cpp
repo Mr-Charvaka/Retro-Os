@@ -9,6 +9,7 @@
 #include "heap.h"
 #include "net.h"
 #include "paging.h"
+#include "pe_loader.h"
 #include "pmm.h"
 #include "shm.h"
 #include "vm.h"
@@ -129,7 +130,22 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
   pd_switch((uint32_t *)phys_pd);
 
   uint32_t top_addr = 0;
-  uint32_t entry = load_elf(filename, &top_addr);
+  uint32_t entry = 0;
+
+  // Detect format
+  uint8_t magic[4];
+  vfs_node_t *node = vfs_resolve_path(filename);
+  if (node) {
+    vfs_read(node, 0, magic, 4);
+    if (magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' &&
+        magic[3] == 'F') {
+      entry = load_elf(filename, &top_addr);
+    } else if (magic[0] == 'M' && magic[1] == 'Z') {
+      entry = load_pe(filename, &top_addr);
+    } else {
+      serial_log("PROC ERROR: Unknown executable format");
+    }
+  }
 
   // Restore parent PD in current process struct
   current_process->page_directory = old_pd_ptr;
@@ -512,9 +528,25 @@ int exec_process(registers_t *regs, const char *path, char *const argv[],
 
   vm_clear_user_mappings();
   uint32_t top_addr = 0;
-  uint32_t entry = load_elf(kernel_path, &top_addr);
+  uint32_t entry = 0;
+
+  // Detect format
+  uint8_t magic[4];
+  vfs_node_t *node = vfs_resolve_path(kernel_path);
+  if (node) {
+    vfs_read(node, 0, magic, 4);
+    if (magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' &&
+        magic[3] == 'F') {
+      entry = load_elf(kernel_path, &top_addr);
+    } else if (magic[0] == 'M' && magic[1] == 'Z') {
+      entry = load_pe(kernel_path, &top_addr);
+    } else {
+      serial_log("EXEC: Unknown format.");
+    }
+  }
+
   if (entry == 0) {
-    serial_log("EXEC: Failed to load ELF.");
+    serial_log("EXEC: Failed to load executable.");
     return -1;
   }
 

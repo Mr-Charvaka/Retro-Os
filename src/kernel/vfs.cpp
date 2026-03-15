@@ -3,6 +3,7 @@
 #include "../include/kernel_fs.h"
 #include "../include/kernel_fs_phase3.h"
 #include "../include/kernel_vfs_phase4.h"
+#include "../include/netfs.h"
 #include "../include/string.h"
 #include "heap.h"
 #include "memory.h"
@@ -430,6 +431,7 @@ struct dirent *vfs_readdir(vfs_node_t *node, uint32_t index) {
 // ============================================================================
 
 extern "C" vfs_node_t *fat16_vfs_init();
+extern "C" vfs_node_t *fathdd_vfs_init();
 
 void vfs_init() {
   // 1. Initialize Root FS (Prefer FAT16 if available)
@@ -466,6 +468,67 @@ void vfs_init() {
   }
   if (!vfs_resolve_path("/dev")) {
     vfs_create("/dev", VFS_DIRECTORY);
+  }
+
+  // 3. Windows Compatibility Environment (Drive C:)
+  serial_log("VFS: Setting up Windows compatibility environment...");
+  if (!vfs_resolve_path("/C")) {
+    vfs_create("/C", VFS_DIRECTORY);
+  }
+
+  // NETFS: Mount Host PC folder as /C/Network
+  netfs_init();
+  vfs_node_t *net_node = netfs_mount("10.0.2.2", "Network");
+  if (net_node) {
+    vfs_node_t *c_node = vfs_resolve_path("/C");
+    if (c_node) {
+      net_node->parent = c_node;
+      // Add to children list manually for simple VFS
+      net_node->next_sibling = c_node->children;
+      c_node->children = net_node;
+      serial_log("VFS: Network Drive mounted at /C/Network");
+    }
+  }
+
+  // HDD: Mount Extra IDE drive at /hdd
+  vfs_node_t *hdd_node = fathdd_vfs_init();
+  if (hdd_node) {
+    hdd_node->parent = vfs_root;
+    hdd_node->next_sibling = vfs_root->children;
+    vfs_root->children = hdd_node;
+    // Rename root node for HDD slightly so lookup can resolve /hdd
+    strcpy(hdd_node->name, "hdd");
+    serial_log("VFS: Extra HDD mounted at /hdd");
+  }
+
+  if (!vfs_resolve_path("/C/Windows")) {
+    vfs_create("/C/Windows", VFS_DIRECTORY);
+  }
+  if (!vfs_resolve_path("/C/Windows/System32")) {
+    vfs_create("/C/Windows/System32", VFS_DIRECTORY);
+  }
+  if (!vfs_resolve_path("/C/Program Files")) {
+    vfs_create("/C/Program Files", VFS_DIRECTORY);
+  }
+  if (!vfs_resolve_path("/C/Program Files/Google")) {
+    vfs_create("/C/Program Files/Google", VFS_DIRECTORY);
+  }
+  if (!vfs_resolve_path("/C/Program Files/Google/Chrome")) {
+    vfs_create("/C/Program Files/Google/Chrome", VFS_DIRECTORY);
+  }
+  if (!vfs_resolve_path("/C/Program Files/Google/Chrome/Application")) {
+    vfs_create("/C/Program Files/Google/Chrome/Application", VFS_DIRECTORY);
+  }
+  if (!vfs_resolve_path(
+          "/C/Program Files/Google/Chrome/Application/chrome.exe")) {
+    vfs_create("/C/Program Files/Google/Chrome/Application/chrome.exe",
+               VFS_FILE);
+    vfs_node_t *chrome = vfs_resolve_path(
+        "/C/Program Files/Google/Chrome/Application/chrome.exe");
+    if (chrome) {
+      const char *stub = "MZ... Retro-OS Google Chrome Stub ...";
+      vfs_write(chrome, 0, (const uint8_t *)stub, strlen(stub));
+    }
   }
 
   // Populate Desktop for visual verification
