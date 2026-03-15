@@ -123,6 +123,11 @@ void HTML5Parser::process_token(Token &t, Tokenizer &tokenizer) {
       insert_character(t);
     } else if (t.type == TokenType::START_TAG) {
       insert_element(t);
+      if (strcmp(t.name, "script") == 0 || strcmp(t.name, "style") == 0) {
+        tokenizer.set_state(TokenizerState::RAWTEXT);
+        mode = InsertionMode::TEXT;
+        break;
+      }
       const char *void_elements[] = {"br",   "img",  "input",
                                      "link", "meta", "hr"};
       for (auto v : void_elements) {
@@ -155,7 +160,18 @@ void HTML5Parser::process_token(Token &t, Tokenizer &tokenizer) {
       insert_character(t);
     } else if (t.type == TokenType::END_TAG) {
       pop_element();
-      mode = InsertionMode::IN_HEAD; // Simplified
+      
+      // Retro-OS Fix: Return to HEAD mode if we are still in the head
+      bool in_head = false;
+      for (int i=0; i<open_elements_count; i++) {
+          if (open_elements[i]->type == NodeType::ELEMENT_NODE) {
+              if (strcmp(((ElementNode*)open_elements[i])->tag_name, "head") == 0) {
+                  in_head = true;
+                  break;
+              }
+          }
+      }
+      mode = in_head ? InsertionMode::IN_HEAD : InsertionMode::IN_BODY;
       tokenizer.set_state(TokenizerState::DATA);
     }
     break;

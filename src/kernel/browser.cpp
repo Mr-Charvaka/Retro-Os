@@ -4,7 +4,10 @@
 #include "../include/css_parser.h"
 #include "../include/html_parser.h"
 #include "../include/string.h"
+//#include "v8/mujs/mujs.h"
 #include "net_advanced.h"
+#include "heap.h"
+#include <setjmp.h>
 
 namespace Browser {
 
@@ -23,6 +26,8 @@ struct BrowserState {
   bool url_focused;
   int url_cursor;
   CSSStyleSheet *stylesheet;
+  //js_State *js;
+  bool is_dillo;
 };
 
 static BrowserState g_browser;
@@ -45,6 +50,7 @@ struct LayoutNode {
   Style style;
   int x, y, w, h;
   bool hidden;
+  char link_url[256]; // For 'a' tags
 };
 
 #define MAX_NODES 2048
@@ -207,6 +213,19 @@ uint32_t parse_css_color(const char *data) {
   return 0x000000;
 }
 
+static char browser_tolower(char c) {
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    return c;
+}
+
+static int browser_strcasecmp(const char *s1, const char *s2) {
+  while (*s1 && (browser_tolower(*s1) == browser_tolower(*s2))) {
+    s1++;
+    s2++;
+  }
+  return *(const unsigned char *)s1 - *(const unsigned char *)s2;
+}
+
 void apply_css_to_style(Node *n, Style &s) {
   if (!g_browser.stylesheet || !n)
     return;
@@ -263,16 +282,18 @@ static const entity_map ENTITIES[] = {
     {"mdash;", "--"}, {nullptr, nullptr}};
 
 void decode_entities(char *text) {
+  char buffer[512];
   char *src = text;
-  char *dst = text;
-  while (*src) {
+  char *dst = buffer;
+  while (*src && (dst - buffer) < 510) {
     if (*src == '&') {
       bool found = false;
       for (int i = 0; ENTITIES[i].name; i++) {
         int len = strlen(ENTITIES[i].name);
         if (strncmp(src + 1, ENTITIES[i].name, len) == 0) {
-          strcpy(dst, ENTITIES[i].val);
-          dst += strlen(ENTITIES[i].val);
+          int vlen = strlen(ENTITIES[i].val);
+          memcpy(dst, ENTITIES[i].val, vlen);
+          dst += vlen;
           src += len + 1;
           found = true;
           break;
@@ -280,17 +301,22 @@ void decode_entities(char *text) {
       }
       if (found)
         continue;
+
       // Decimal entities &#123;
-      if (*(src + 1) == '#') {
+      if (src[1] == '#') {
         int val = 0;
-        char *p = src + 2;
+        const char *p = src + 2;
         while (*p >= '0' && *p <= '9') {
           val = val * 10 + (*p - '0');
           p++;
         }
         if (*p == ';') {
-          *dst++ = (char)val;
-          src = p + 1;
+          if (val > 0 && val < 256) {
+              *dst++ = (char)val;
+          } else {
+              *dst++ = '?'; // Fallback for unsupported unicode
+          }
+          src = (char *)p + 1;
           continue;
         }
       }
@@ -298,6 +324,7 @@ void decode_entities(char *text) {
     *dst++ = *src++;
   }
   *dst = 0;
+  strcpy(text, buffer);
 }
 
 // HTML PARSER INTEGRATION
@@ -320,11 +347,11 @@ void flatten_tree(Node *n, Style current_style, bool hide_content) {
 
     apply_css_to_style(n, next_style);
 
-    // Filter non-visible elements
-    if (strcmp(el->tag_name, "script") == 0 ||
-        strcmp(el->tag_name, "style") == 0 ||
-        strcmp(el->tag_name, "title") == 0 ||
-        strcmp(el->tag_name, "head") == 0) {
+    // Filter non-visible elements (case-insensitive)
+    if (browser_strcasecmp(el->tag_name, "script") == 0 ||
+        browser_strcasecmp(el->tag_name, "style") == 0 ||
+        browser_strcasecmp(el->tag_name, "title") == 0 ||
+        browser_strcasecmp(el->tag_name, "head") == 0) {
       current_hide = true;
     }
 
@@ -334,6 +361,10 @@ void flatten_tree(Node *n, Style current_style, bool hide_content) {
       strcpy(ln->tag, el->tag_name);
       ln->style = next_style;
       ln->hidden = false;
+      ln->link_url[0] = 0;
+      
+      const char* href = el->get_attribute("href");
+      if (href) strncpy(ln->link_url, href, 255);
     }
   } else if (n->type == NodeType::TEXT_NODE) {
     if (!current_hide) {
@@ -349,6 +380,7 @@ void flatten_tree(Node *n, Style current_style, bool hide_content) {
       ln->style = current_style; // Inherit parent element style
       ln->style.is_block = false;
       ln->hidden = false;
+      ln->link_url[0] = 0;
     }
     return; // Leaf node
   }
@@ -357,6 +389,35 @@ void flatten_tree(Node *n, Style current_style, bool hide_content) {
   for (Node *child = n->first_child; child; child = child->next_sibling) {
     flatten_tree(child, next_style, current_hide);
   }
+
+  // Close block node logic could go here if we tracked hierarchy, 
+  // but we flattened it.
+}
+
+/*static void js_print(js_State *J) {
+  const char *s = js_tostring(J, 1);
+  serial_log("BROWSER JS: ");
+  serial_log(s);
+  js_pushundefined(J);
+}*/
+
+void execute_scripts(Node *n) {
+  /*if (!n) return;
+  if (n->type == NodeType::ELEMENT_NODE) {
+    ElementNode *el = (ElementNode *)n;
+    if (strcmp(el->tag_name, "script") == 0) {
+      if (el->first_child && el->first_child->type == NodeType::TEXT_NODE) {
+        TextNode *tn = (TextNode *)el->first_child;
+        if (g_browser.js) {
+          serial_log("BROWSER: Executing inline script...");
+          js_dostring(g_browser.js, tn->text);
+        }
+      }
+    }
+  }
+  for (Node *child = n->first_child; child; child = child->next_sibling) {
+    execute_scripts(child);
+  }*/
 }
 
 void parse_html() {
@@ -382,6 +443,14 @@ void parse_html() {
     }
     collect_styles(doc);
     flatten_tree(doc, get_default_style("body"), false);
+
+    // Initial JS context
+    /*if (g_browser.js) js_freestate(g_browser.js);
+    g_browser.js = js_newstate(nullptr, nullptr, 0);
+    js_newcfunction(g_browser.js, js_print, "print", 1);
+    js_setglobal(g_browser.js, "print");*/
+
+    execute_scripts(doc);
     delete doc;
   }
 }
@@ -466,14 +535,20 @@ void layout_content(int width) {
 // MAIN INTERFACE
 // ----------------------------------------------------------------------------
 
-void init() {
+void init(bool is_dillo) {
   memset(&g_browser, 0, sizeof(BrowserState));
+  g_browser.is_dillo = is_dillo;
   strcpy(g_browser.url, "http://info.cern.ch");
   strcpy(g_browser.status, "Ready");
   g_browser.content_len = 0;
-  g_browser.url_focused = false;
   g_browser.url_cursor = strlen(g_browser.url);
+  //g_browser.js = nullptr;
 }
+
+// OS system calls for local files
+extern "C" int sys_open(const char *path, int flags);
+extern "C" int sys_read(int fd, void *buf, uint32_t sz);
+extern "C" int sys_close(int fd);
 
 static void navigate_internal(const char *url, int depth) {
   if (depth > 5) {
@@ -489,7 +564,7 @@ static void navigate_internal(const char *url, int depth) {
   strcpy(g_browser.status, "Loading...");
 
   char safe_url[256];
-  if (strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0) {
+  if (strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0 || strncmp(url, "file://", 7) == 0) {
     strcpy(safe_url, url);
   } else {
     strcpy(safe_url, "http://");
@@ -507,8 +582,18 @@ static void navigate_internal(const char *url, int depth) {
   g_browser.content_len = 0;
   g_browser.scroll_y = 0;
 
-  int ret = http_get(safe_url, (uint8_t *)g_browser.content,
-                     sizeof(g_browser.content) - 1, &g_browser.response);
+  int ret = -1;
+  if (strncmp(safe_url, "file://", 7) == 0) {
+    const char *path = safe_url + 7;
+    int fd = sys_open(path, 0);
+    if (fd >= 0) {
+      ret = sys_read(fd, g_browser.content, sizeof(g_browser.content) - 1);
+      sys_close(fd);
+    }
+  } else {
+    ret = http_get(safe_url, (uint8_t *)g_browser.content,
+                      sizeof(g_browser.content) - 1, &g_browser.response);
+  }
 
   if (ret > 0) {
     // Redirect Support
@@ -516,8 +601,35 @@ static void navigate_internal(const char *url, int depth) {
         g_browser.response.status_code == 302) {
       const char *loc = http_get_header(&g_browser.response, "Location");
       if (loc) {
-        serial_log("BROWSER: Redirecting...");
-        navigate_internal(loc, depth + 1);
+        serial_log("BROWSER: Redirecting to...");
+        serial_log(loc);
+        
+        char resolved_loc[256];
+        if (strncmp(loc, "http://", 7) == 0 || strncmp(loc, "https://", 8) == 0 || strncmp(loc, "file://", 7) == 0) {
+            strcpy(resolved_loc, loc);
+        } else if (loc[0] == '/') {
+            // Absolute path relative to host
+            // Extract host from safe_url
+            const char* host_end = strchr(safe_url + 8, '/');
+            if (!host_end) host_end = safe_url + strlen(safe_url);
+            int host_part_len = host_end - safe_url;
+            strncpy(resolved_loc, safe_url, host_part_len);
+            resolved_loc[host_part_len] = 0;
+            strcat(resolved_loc, loc);
+        } else {
+            // Relative to current path (simplified)
+            strcpy(resolved_loc, safe_url);
+            char* last_slash = strrchr(resolved_loc, '/');
+            if (last_slash > safe_url + 8) {
+                *(last_slash + 1) = 0;
+                strcat(resolved_loc, loc);
+            } else {
+                strcat(resolved_loc, "/");
+                strcat(resolved_loc, loc);
+            }
+        }
+        
+        navigate_internal(resolved_loc, depth + 1);
         return;
       }
     }
@@ -545,7 +657,9 @@ void draw(Window *w) {
   int toolbar_h = 38;
 
   // Tab Bar Background
-  FB::rect(w->x, w->y, w->w, tab_h, 0xDDE1E6);
+  uint32_t tab_bg =
+      g_browser.is_dillo ? 0x708090 : 0xDDE1E6; // Dillo uses a grayish-blue
+  FB::rect(w->x, w->y, w->w, tab_h, tab_bg);
 
   // Buttons (Top Right)
   int btn_w = 12;
@@ -590,6 +704,10 @@ void draw(Window *w) {
     FB::rect(url_x + url_w - 1, url_y, 1, url_h, url_border);
   }
 
+  if (g_browser.is_dillo) {
+    FontSystem::draw_text(font_ui, w->x + w->w - 90, w->y + 12, "Dillo Engine",
+                          0x404040);
+  }
   if (strlen(g_browser.url) > 0)
     FontSystem::draw_text(font_ui, url_x + 12, url_y + 8, g_browser.url,
                           0x000000);
@@ -633,6 +751,14 @@ void draw(Window *w) {
         line_h = 0;
       }
       cy += n->style.margin_top;
+      
+      // DRAW BLOCK BACKGROUND
+      // Since we don't know the full height of the block yet in this flattened loop,
+      // we at least draw a small strip or we should have pre-calculated heights.
+      // For now, let's draw the background for the NEXT line of text if it exists.
+      if (n->style.background_color != 0) {
+          FB::rect(cx, cy, max_w, 20, n->style.background_color);
+      }
     }
 
     if (strlen(n->text) > 0) {
@@ -661,13 +787,16 @@ void draw(Window *w) {
 
           if (cy + glyph_h > content_y && cy < content_y + content_h) {
             if (n->style.background_color != 0) {
-              // Approximate background for the word
               FB::rect(cx, cy, w_px, glyph_h, n->style.background_color);
             }
+            
+            // Store bounds for hit testing (simplified)
+            n->x = cx; n->y = cy; n->w = w_px; n->h = glyph_h;
+            
             FontSystem::draw_text(font, cx, cy, word, n->style.color);
           }
 
-          cx += w_px + 8;
+          cx += w_px + 10; // Increased spacing for clear labels
         }
         if (*c == ' ')
           word_start = c + 1;
@@ -753,7 +882,19 @@ bool click(Window *w, int mx, int my) {
     }
   } else {
     g_browser.url_focused = false;
-    g_browser.scroll_y += 20;
+    
+    // Check for link clicks
+    for (int i=0; i<node_count; i++) {
+        LayoutNode *n = &nodes[i];
+        if (strlen(n->link_url) > 0 && mx >= n->x && mx <= n->x + n->w && my >= n->y && my <= n->y + n->h) {
+            serial_log("BROWSER: Clicked link: ");
+            serial_log(n->link_url);
+            navigate(n->link_url);
+            return true;
+        }
+    }
+    
+    g_browser.scroll_y += 40;
   }
   return true;
 }
