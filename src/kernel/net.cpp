@@ -10,7 +10,26 @@
 // Our network identity
 // Our network identity
 static u8 my_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
-u32 my_ip = 0x0F02000A; // 10.0.2.15
+extern "C" uint32_t net_get_local_ip(void);
+
+/* ================= IP REASSEMBLY ================= */
+#define MAX_REASSEMBLY_SLOTS 8
+#define MAX_REASSEMBLY_SIZE 65535
+
+struct ReassemblySlot {
+    u32 src_ip;
+    u16 id;
+    u8* buffer;
+    u16 current_size;
+    u16 total_expected;
+    u32 timeout;
+    bool used;
+};
+
+static ReassemblySlot reassembly_table[MAX_REASSEMBLY_SLOTS];
+extern "C" uint32_t timer_now_ms(void);
+extern "C" void* kmalloc(uint32_t);
+extern "C" void kfree(void*);
 
 // Gateway info - CRITICAL for routing
 static u8 gateway_mac[6] = {0xFF, 0xFF, 0xFF,
@@ -63,7 +82,7 @@ void send_arp_request(u32 target_ip) {
   arp->hlen = 6;
   arp->plen = 4;
   arp->oper = htons(ARP_REQUEST);
-  arp->spa = my_ip;
+  arp->spa = net_get_local_ip();
   arp->tpa = target_ip;
 
   serial_log("NET: Sending ARP Request for gateway");
@@ -90,7 +109,7 @@ void send_arp_reply(arp_pkt *req) {
   arp->hlen = 6;
   arp->plen = 4;
   arp->oper = htons(ARP_REPLY);
-  arp->spa = my_ip;
+  arp->spa = net_get_local_ip();
   arp->tpa = req->spa;
 
   serial_log("NET: Sending ARP Reply");
@@ -101,7 +120,7 @@ void handle_arp(u8 *packet) {
   arp_pkt *arp = (arp_pkt *)(packet + sizeof(eth_hdr));
   u16 oper = htons(arp->oper);
 
-  if (oper == ARP_REQUEST && arp->tpa == my_ip) {
+  if (oper == ARP_REQUEST && arp->tpa == net_get_local_ip()) {
     serial_log("NET: Received ARP Request for our IP");
     send_arp_reply(arp);
   } else if (oper == ARP_REPLY) {
@@ -142,7 +161,7 @@ void send_icmp_reply(ip_hdr *ip, icmp_hdr *icmp, u8 *data, int data_len) {
   eth->type = htons(ETH_TYPE_IP);
 
   *ip2 = *ip;
-  ip2->src = my_ip;
+  ip2->src = net_get_local_ip();
   ip2->dst = ip->src;
   ip2->checksum = 0;
   ip2->checksum = htons(checksum(ip2, sizeof(ip_hdr)));
@@ -201,7 +220,7 @@ extern "C" void ip_send(uint32_t dst_ip, uint8_t protocol, uint8_t *data,
   ip->flags = 0;
   ip->ttl = 64;
   ip->proto = protocol;
-  ip->src = my_ip;  // 10.0.2.15
+  ip->src = net_get_local_ip();
   ip->dst = dst_ip; // Destination (e.g., 10.0.2.3 for DNS)
   ip->checksum = 0;
   ip->checksum = checksum(ip, sizeof(ip_hdr));
@@ -225,6 +244,16 @@ void handle_icmp(u8 *pkt) {
   int icmp_data_len = icmp_total_len - sizeof(icmp_hdr);
 
   if (icmp->type == 8) { // Echo Request
+    // Verify checksum
+    u16 received_chk = icmp->checksum;
+    icmp->checksum = 0;
+    u16 calculated_chk = htons(checksum(icmp, icmp_total_len));
+    if (received_chk != calculated_chk) {
+        serial_log("NET: ICMP Checksum Failed!");
+        return;
+    }
+    icmp->checksum = received_chk;
+
     serial_log("NET: Received ICMP Echo Request (Ping)");
     send_icmp_reply(ip, icmp, (u8 *)icmp + sizeof(icmp_hdr), icmp_data_len);
   } else if (icmp->type == 0) { // Echo Reply
@@ -258,6 +287,89 @@ void handle_tcp(u8 *pkt) {
   tcp_handle_packet(ip->src, ip->dst, (u8 *)ip + ip_hdr_len, tcp_len);
 }
 
+void process_full_ip_packet(u8 *pkt) {
+    ip_hdr *ip = (ip_hdr *)pkt;
+    if (ip->proto == IP_PROTO_ICMP) {
+      handle_icmp((u8 *)ip);
+    } else if (ip->proto == IP_PROTO_UDP) {
+      handle_udp((u8 *)ip);
+    } else if (ip->proto == IP_PROTO_TCP) {
+      handle_tcp((u8 *)ip);
+    }
+}
+
+void handle_ip_fragment(u8 *packet) {
+    ip_hdr *ip = (ip_hdr *)(packet + sizeof(eth_hdr));
+    u16 frag_info = htons(ip->flags);
+    u16 offset = (frag_info & 0x1FFF) * 8;
+    bool more_frags = (frag_info & 0x2000) != 0;
+    int ip_hdr_len = (ip->ver_ihl & 0x0F) * 4;
+    int payload_len = htons(ip->len) - ip_hdr_len;
+
+    if (offset == 0 && !more_frags) {
+        // Not a fragment, process normally
+        process_full_ip_packet((u8*)ip);
+        return;
+    }
+
+    // fragmented packet logic
+    ReassemblySlot *slot = nullptr;
+    for (int i=0; i<MAX_REASSEMBLY_SLOTS; i++) {
+        if (reassembly_table[i].used && reassembly_table[i].src_ip == ip->src && reassembly_table[i].id == ip->id) {
+            slot = &reassembly_table[i];
+            break;
+        }
+    }
+
+    if (!slot) {
+        // Find free slot
+        for (int i=0; i<MAX_REASSEMBLY_SLOTS; i++) {
+            if (!reassembly_table[i].used) {
+                slot = &reassembly_table[i];
+                slot->used = true;
+                slot->src_ip = ip->src;
+                slot->id = ip->id;
+                slot->buffer = (u8*)kmalloc(MAX_REASSEMBLY_SIZE);
+                slot->current_size = 0;
+                slot->total_expected = 0;
+                slot->timeout = timer_now_ms() + 5000;
+                break;
+            }
+        }
+    }
+
+    if (!slot) return; // Drop if no slots
+
+    // Copy payload to slot buffer at correct offset
+    if (offset + payload_len <= MAX_REASSEMBLY_SIZE) {
+        memcpy(slot->buffer + offset, (u8*)ip + ip_hdr_len, payload_len);
+        if (offset + payload_len > slot->current_size) {
+            slot->current_size = offset + payload_len;
+        }
+    }
+
+    if (!more_frags) {
+        slot->total_expected = offset + payload_len;
+    }
+
+    // Check if fully reassembled (simplified check)
+    if (slot->total_expected > 0 && slot->current_size >= slot->total_expected) {
+        // We have the full packet. Create a temporary full IP buffer to pass to handlers
+        u8* full_pkt = (u8*)kmalloc(slot->total_expected + sizeof(ip_hdr));
+        ip_hdr* new_ip = (ip_hdr*)full_pkt;
+        memcpy(new_ip, ip, sizeof(ip_hdr));
+        new_ip->len = htons(slot->total_expected + sizeof(ip_hdr));
+        new_ip->flags = 0; // Clear flags
+        memcpy(full_pkt + sizeof(ip_hdr), slot->buffer, slot->total_expected);
+        
+        process_full_ip_packet(full_pkt);
+        
+        kfree(full_pkt);
+        kfree(slot->buffer);
+        slot->used = false;
+    }
+}
+
 // ============== Main RX Handler ==============
 
 extern "C" void net_rx_handler(u8 *packet, u16 len) {
@@ -272,33 +384,41 @@ extern "C" void net_rx_handler(u8 *packet, u16 len) {
   if (type == ETH_TYPE_ARP) {
     handle_arp(packet);
   } else if (type == ETH_TYPE_IP) {
-    ip_hdr *ip = (ip_hdr *)(packet + sizeof(eth_hdr));
-    if (ip->proto == IP_PROTO_ICMP) {
-      handle_icmp((u8 *)ip);
-    } else if (ip->proto == IP_PROTO_UDP) {
-      handle_udp((u8 *)ip);
-    } else if (ip->proto == IP_PROTO_TCP) {
-      handle_tcp((u8 *)ip);
-    }
+    handle_ip_fragment(packet);
   }
 }
 
 // ============== Polling ==============
 
 extern "C" void net_poll(void) {
-  // Periodic logging DISABLED to reduce log spam
+  // Check for timed out reassembly slots
+  static u32 last_cleanup = 0;
+  u32 now = timer_now_ms();
+  if (now - last_cleanup > 1000) {
+      for (int i=0; i<MAX_REASSEMBLY_SLOTS; i++) {
+          if (reassembly_table[i].used && now > reassembly_table[i].timeout) {
+              kfree(reassembly_table[i].buffer);
+              reassembly_table[i].used = false;
+              serial_log("NET: IP Reassembly Timeout");
+          }
+      }
+      last_cleanup = now;
+  }
 
   u8 buf[2048];
-  int len = e1000_receive(buf);
-  if (len > 0) {
-    net_rx_handler(buf, len);
+  int processed = 0;
+  while (processed < 32) { // Process up to 32 packets in a burst
+      int len = e1000_receive(buf);
+      if (len <= 0) break;
+      net_rx_handler(buf, len);
+      processed++;
   }
 }
 
 // ============== Initialization ==============
 
 extern "C" void net_init(void) {
-  serial_log("NET: Network Stack Initialized (10.0.2.15)");
+  serial_log("NET: Network Stack Initialized");
 
   // Send ARP request for gateway to learn its MAC
   // This is CRITICAL - without gateway MAC, routing won't work
@@ -336,7 +456,7 @@ extern "C" void net_ping(void) {
   ip->flags = 0;
   ip->ttl = 64;
   ip->proto = IP_PROTO_ICMP;
-  ip->src = my_ip;
+  ip->src = net_get_local_ip();
   ip->dst = gateway_ip;
   ip->checksum = 0;
   ip->checksum = checksum(ip, sizeof(ip_hdr));

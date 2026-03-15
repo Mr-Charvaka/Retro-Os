@@ -13,7 +13,7 @@
 #define ARP_REQUEST 1
 #define ARP_REPLY 2
 
-extern u32 my_ip; // Exposed for TCP/UDP Checksums
+extern "C" uint32_t net_get_local_ip(void); // Get assigned IP
 
 struct eth_hdr {
   u8 dst[6];
