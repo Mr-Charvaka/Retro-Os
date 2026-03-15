@@ -15,6 +15,7 @@ constexpr int MSG_GFX_WINDOW_CREATED = 2;
 constexpr int MSG_GFX_INVALIDATE_RECT = 3;
 constexpr int MSG_GFX_MOUSE_EVENT = 4;
 constexpr int MSG_GFX_KEY_EVENT = 5;
+constexpr int MSG_GFX_CLOSE_WINDOW = 6;
 
 struct msg_gfx_create_window_t {
   int width;
@@ -41,6 +42,7 @@ struct msg_gfx_mouse_event_t {
 struct msg_gfx_key_event_t {
   int window_id;
   char key;
+  int scancode;
 };
 
 struct gfx_msg_t {
@@ -156,6 +158,17 @@ public:
         put_pixel(x + i, y + j, color);
       }
     }
+  }
+
+  // Send close-window request to window server (same encoding as red X button)
+  void close_window() {
+    if (sock_fd < 0)
+      return;
+    gfx_msg_t msg;
+    msg.type = MSG_GFX_CLOSE_WINDOW;
+    msg.size = 0;
+    msg.data.invalidate.window_id = window_id;
+    Syscall::write(sock_fd, &msg, sizeof(msg));
   }
 };
 } // namespace OS

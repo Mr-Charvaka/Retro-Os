@@ -67,9 +67,9 @@ static inline int execve(const char *path, char **argv, char **envp) {
 }
 
 static inline void exit(int status) {
+  // Prefer POSIX _exit path. If kernel returns unexpectedly, try legacy exit.
+  asm volatile("int $0x80" : : "a"(SYS__EXIT), "b"(status));
   asm volatile("int $0x80" : : "a"(SYS_EXIT), "b"(status));
-  while (1)
-    ;
 }
 
 static inline int wait(int *status) {
