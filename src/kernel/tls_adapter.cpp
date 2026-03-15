@@ -12,6 +12,9 @@ extern "C" int tcp_read_data(tcp_tcb_t *tcb, void *buffer, uint16_t len);
 extern "C" int tcp_has_data(tcp_tcb_t *tcb);
 extern "C" void net_poll(void);
 extern "C" void schedule(void);
+extern "C" uint32_t timer_now_ms(void);
+extern "C" int mbedtls_ssl_set_hostname( mbedtls_ssl_context *ssl, const char *hostname );
+extern "C" int mbedtls_ssl_conf_alpn_protocols( mbedtls_ssl_config *conf, const char **protos );
 
 struct TLSContext {
   mbedtls_ssl_context ssl;
@@ -19,6 +22,21 @@ struct TLSContext {
   mbedtls_entropy_context entropy;
   mbedtls_ctr_drbg_context ctr_drbg;
 };
+
+// Custom entropy source using system clock jitter
+static int kernel_entropy_source(void *data, unsigned char *output, size_t len, size_t *olen) {
+    (void)data;
+    static uint32_t state = 0xDEADBEEF;
+    for (size_t i = 0; i < len; i++) {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        state += timer_now_ms();
+        output[i] = (unsigned char)(state & 0xFF);
+    }
+    *olen = len;
+    return 0;
+}
 
 static int tls_send_cb(void *ctx, const unsigned char *buf, size_t len) {
   tcp_tcb_t *conn = (tcp_tcb_t *)ctx;
@@ -45,6 +63,9 @@ extern "C" void *tls_init(void *tcp_conn, const char *hostname) {
   mbedtls_ctr_drbg_seed(&ctx->ctr_drbg, mbedtls_entropy_func, &ctx->entropy,
                         (const unsigned char *)pers, strlen(pers));
 
+  // Add our custom entropy source to the mbedtls pool
+  mbedtls_entropy_add_source(&ctx->entropy, kernel_entropy_source, NULL, 1, 1);
+
   mbedtls_ssl_config_defaults(&ctx->conf, MBEDTLS_SSL_IS_CLIENT,
                               MBEDTLS_SSL_TRANSPORT_STREAM,
                               MBEDTLS_SSL_PRESET_DEFAULT);
@@ -53,6 +74,10 @@ extern "C" void *tls_init(void *tcp_conn, const char *hostname) {
   // sites
   mbedtls_ssl_conf_authmode(&ctx->conf, MBEDTLS_SSL_VERIFY_NONE);
   mbedtls_ssl_conf_rng(&ctx->conf, mbedtls_ctr_drbg_random, &ctx->ctr_drbg);
+
+  // Force HTTP/1.1 via ALPN - important for modern sites to avoid binary HTTP/2
+  static const char *alpn_protocols[] = {"http/1.1", NULL};
+  mbedtls_ssl_conf_alpn_protocols(&ctx->conf, alpn_protocols);
 
   mbedtls_ssl_setup(&ctx->ssl, &ctx->conf);
   mbedtls_ssl_set_hostname(&ctx->ssl, hostname);

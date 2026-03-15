@@ -47,6 +47,8 @@ struct http_request {
 struct parser_context {
   http_response *resp;
   char last_header[64];
+  uint8_t* temp_body;
+  size_t temp_body_cap;
 };
 
 /* ===================== EXTERNAL DECLARATIONS ===================== */
@@ -66,7 +68,7 @@ extern "C" void tcp_close(tcp_tcb_t *tcb);
 extern "C" void schedule(void);
 extern "C" void net_poll(void);
 
-static uint32_t local_ip = 0x0F02000A; // 10.0.2.15
+extern "C" uint32_t net_get_local_ip(void);
 
 /* ===================== STRING HELPERS ===================== */
 
@@ -123,21 +125,13 @@ static int on_header_value(http_parser *p, const char *at, size_t length) {
   return 0;
 }
 
+// Definition below now removed thanks to unified struct above
+
 static int on_body(http_parser *p, const char *at, size_t length) {
   auto ctx = (parser_context *)p->data;
-  // We parse in-place, but move body to a contiguous start point if needed
-  if (!ctx->resp->body) {
-    ctx->resp->body = (uint8_t *)at;
-    ctx->resp->body_length = length;
-  } else {
-    // http-parser handles chunking: we just need to append/ensure contiguous if
-    // multi-callback For simplicity in this kernel, we assume the initial
-    // buffer is continuous and parser just segments it If it's chunked,
-    // http-parser calls this FOR EACH CHUNK without sizes. Contiguous!
-    if ((uint8_t *)at != ctx->resp->body + ctx->resp->body_length) {
-      memmove(ctx->resp->body + ctx->resp->body_length, at, length);
-    }
-    ctx->resp->body_length += length;
+  if (ctx->temp_body && ctx->resp->body_length + length < ctx->temp_body_cap) {
+      memcpy(ctx->temp_body + ctx->resp->body_length, at, length);
+      ctx->resp->body_length += length;
   }
   return 0;
 }
@@ -157,6 +151,9 @@ static int http_parse_response(uint8_t *data, int len, http_response *resp) {
   http_parser_init(&parser, HTTP_RESPONSE);
   parser_context ctx;
   ctx.resp = resp;
+  // Use a temporary buffer to collect de-chunked body safely
+  ctx.temp_body_cap = 128 * 1024; // 128KB
+  ctx.temp_body = (uint8_t*)kmalloc(ctx.temp_body_cap);
   parser.data = &ctx;
 
   http_parser_settings settings;
@@ -167,6 +164,13 @@ static int http_parse_response(uint8_t *data, int len, http_response *resp) {
   settings.on_status = on_status;
 
   http_parser_execute(&parser, &settings, (const char *)data, len);
+
+  if (resp->body_length > 0) {
+      // Overwrite the original buffer with the clean, de-chunked body
+      memcpy(data, ctx.temp_body, resp->body_length);
+      resp->body = data;
+  }
+  kfree(ctx.temp_body);
   return 0;
 }
 
@@ -240,6 +244,7 @@ extern "C" int http_get(const char *url, uint8_t *buffer, int max_len,
     return -1;
 
   uint16_t local_port = 49152 + (timer_now_ms() % 10000);
+  uint32_t local_ip = net_get_local_ip();
   tcp_tcb_t *conn = tcp_connect(local_ip, local_port, remote_ip, port);
   if (!conn)
     return -1;

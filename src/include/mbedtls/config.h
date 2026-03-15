@@ -54,6 +54,7 @@
 #define MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED
 #define MBEDTLS_AES_ROM_TABLES
 #define MBEDTLS_SSL_SERVER_NAME_INDICATION
+#define MBEDTLS_SSL_ALPN
 
 /* Disable things that need OS headers */
 #undef MBEDTLS_NET_C
