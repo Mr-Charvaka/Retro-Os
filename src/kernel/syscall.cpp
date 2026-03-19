@@ -187,12 +187,24 @@ int sys_open(registers_t *regs) {
     return -EPERM;
 
   vfs_node_t *node = vfs_resolve_path(path);
+
+  if (!node && (flags & O_CREAT)) {
+    if (vfs_create(path, VFS_FILE) == 0) {
+      node = vfs_resolve_path(path);
+    }
+  }
+
   if (node) {
+    if ((flags & O_TRUNC) && ((flags & 3) != O_RDONLY)) {
+      uint8_t dummy = 0;
+      vfs_write(node, 0, &dummy, 0);
+    }
+
     file_description_t *desc =
         (file_description_t *)kmalloc(sizeof(file_description_t));
     desc->node = node;
     desc->flags = flags;
-    desc->offset = 0;
+    desc->offset = (flags & O_APPEND) ? node->size : 0;
     desc->ref_count = 1;
 
     for (int j = 0; j < MAX_PROCESS_FILES; j++) {
@@ -1488,7 +1500,6 @@ void init_syscalls() { register_interrupt_handler(0x80, syscall_handler); }
 
 void syscall_handler(registers_t *regs) {
   if (regs->eax < (uint32_t)num_syscalls && syscall_table[regs->eax]) {
-    serial_log_hex("SYSCALL: Called ID ", regs->eax);
     regs->eax = syscall_table[regs->eax](regs);
   } else {
     serial_log_hex("SYSCALL: Unknown ID ", regs->eax);
