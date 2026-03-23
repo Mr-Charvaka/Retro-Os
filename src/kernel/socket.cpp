@@ -220,7 +220,10 @@ int sys_socket(int domain, int type, int protocol) {
   vfs_node_t *node = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
   if (!node) {
     serial_log("SOCKET ERROR: OOM for vfs_node");
-    // TODO: sock ko free karna hai
+    sockets[sock->id] = 0;
+    if (sock->buffer)
+      kfree(sock->buffer);
+    kfree(sock);
     return -1;
   }
   memset(node, 0, sizeof(vfs_node_t));
@@ -479,8 +482,7 @@ ssize_t sys_send(int sockfd, const void *buf, size_t len, int flags) {
     return -1;
   vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node || node->flags != VFS_SOCKET)
-    if (!node || node->flags != VFS_SOCKET)
-      return -1;
+    return -1;
 
   socket_t *sock = (socket_t *)node->impl;
   if (sock->domain == AF_INET) {
@@ -499,8 +501,7 @@ ssize_t sys_recv(int sockfd, void *buf, size_t len, int flags) {
     return -1;
   vfs_node_t *node = current_process->fd_table[sockfd]->node;
   if (!node || node->flags != VFS_SOCKET)
-    if (!node || node->flags != VFS_SOCKET)
-      return -1;
+    return -1;
 
   socket_t *sock = (socket_t *)node->impl;
   if (sock->domain == AF_INET) {

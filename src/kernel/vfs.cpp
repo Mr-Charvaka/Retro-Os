@@ -302,10 +302,12 @@ vfs_node_t *vfs_resolve_path_relative(vfs_node_t *base, const char *path) {
     }
     // Phase A Fallback for vfs_root (FAT16) lookup
     else if (current == vfs_root) {
-      // Special case: if we are at root, also check Phase A
       char subpath[MAX_PATH];
-      strcpy(subpath, "/");
-      strcat(subpath, token);
+      strncpy(subpath, "/", MAX_PATH - 1);
+      subpath[MAX_PATH - 1] = 0;
+      int token_len = strlen(token);
+      if (token_len + 1 < MAX_PATH)
+        strcat(subpath, token);
       phase_inode *pinode = phase_vfs_resolve(subpath);
       if (pinode) {
         next = wrap_phase_inode(pinode, token);
@@ -382,17 +384,19 @@ int vfs_create(const char *path, int type) {
 
   vfs_node_t *parent = vfs_root;
   if (last_slash > 0) {
-    memcpy(parent_path, path, last_slash);
-    parent_path[last_slash] = 0;
+    int copy_len = last_slash < 255 ? last_slash : 255;
+    memcpy(parent_path, path, copy_len);
+    parent_path[copy_len] = 0;
     parent = vfs_resolve_path(parent_path);
   } else if (last_slash == 0) {
     parent = vfs_root;
   }
 
   if (last_slash != -1)
-    strcpy(name, path + last_slash + 1);
+    strncpy(name, path + last_slash + 1, 127);
   else
-    strcpy(name, path);
+    strncpy(name, path, 127);
+  name[127] = 0;
 
   if (!parent)
     return -1;

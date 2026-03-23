@@ -482,9 +482,14 @@ int sys_chdir_call(registers_t *regs) {
   vfs_node_t *node = vfs_resolve_path(path);
   if (node && (node->flags & 0x7) == VFS_DIRECTORY) {
     if (path[0] == '/') {
-      strcpy(current_process->cwd, path);
+      strncpy(current_process->cwd, path, 255);
+      current_process->cwd[255] = 0;
     } else {
-      strcat(current_process->cwd, "/"); // Relative path hai toh jod do
+      int cwd_len = strlen(current_process->cwd);
+      int path_len = strlen(path);
+      if (cwd_len + 1 + path_len >= 256)
+        return -ERANGE;
+      strcat(current_process->cwd, "/");
       strcat(current_process->cwd, path);
     }
     return 0;
