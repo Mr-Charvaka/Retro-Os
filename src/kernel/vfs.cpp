@@ -195,9 +195,8 @@ static vfs_node_t *wrap_phase_inode(phase_inode *pinode, const char *name) {
     phase_inode *p = (phase_inode *)n->impl;
     if (!p || p->type != INODE_FILE)
       return 0;
-    // Simple block 0 read for now (matching Phase A implementation)
-    memcpy(buf, phase_data_blocks[p->blocks[0]] + off, sz);
-    return sz;
+    int r = vfs_read_phase_a(p, (char *)buf, off, sz);
+    return (r > 0) ? (uint32_t)r : 0;
   };
 
   node->write = [](vfs_node_t *n, uint32_t off, uint32_t sz,
@@ -205,7 +204,16 @@ static vfs_node_t *wrap_phase_inode(phase_inode *pinode, const char *name) {
     phase_inode *p = (phase_inode *)n->impl;
     if (!p || p->type != INODE_FILE)
       return 0;
-    return vfs_write_phase_a(p, (const char *)buf, sz);
+    if (sz == 0) {
+      if (vfs_truncate_phase_a(p, 0) == 0)
+        n->size = 0;
+      return 0;
+    }
+
+    int w = vfs_write_phase_a_at(p, (const char *)buf, off, sz);
+    if (w > 0 && (off + (uint32_t)w) > n->size)
+      n->size = off + (uint32_t)w;
+    return (w > 0) ? (uint32_t)w : 0;
   };
 
   node->readdir = [](vfs_node_t *n, uint32_t idx) -> struct dirent * {

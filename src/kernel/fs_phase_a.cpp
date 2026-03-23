@@ -199,16 +199,63 @@ int vfs_create_file_phase_a(const char *path) {
 }
 
 int vfs_write_phase_a(phase_inode *f, const char *data, uint32_t len) {
+  return vfs_write_phase_a_at(f, data, 0, len);
+}
+
+int vfs_read_phase_a(phase_inode *f, char *out, uint32_t offset, uint32_t len) {
+  if (!f || f->type != INODE_FILE || !out)
+    return -1;
+
+  if (offset >= f->size)
+    return 0;
+
+  uint32_t to_read = len;
+  if (offset + to_read > f->size)
+    to_read = f->size - offset;
+
+  memcpy(out, phase_data_blocks[f->blocks[0]] + offset, to_read);
+  return (int)to_read;
+}
+
+int vfs_write_phase_a_at(phase_inode *f, const char *data, uint32_t offset,
+                         uint32_t len) {
   if (!f || f->type != INODE_FILE)
     return -1;
-  if (len > BLOCK_SIZE)
-    len = BLOCK_SIZE;
 
-  memcpy(phase_data_blocks[f->blocks[0]], data, len);
-  f->size = len;
+  if (offset >= BLOCK_SIZE)
+    return 0;
+
+  uint32_t to_write = len;
+  if (offset + to_write > BLOCK_SIZE)
+    to_write = BLOCK_SIZE - offset;
+
+  if (to_write > 0 && data) {
+    memcpy(phase_data_blocks[f->blocks[0]] + offset, data, to_write);
+  }
+
+  uint32_t end_pos = offset + to_write;
+  if (end_pos > f->size)
+    f->size = end_pos;
 
   phase_vfs_sync();
-  return len;
+  return (int)to_write;
+}
+
+int vfs_truncate_phase_a(phase_inode *f, uint32_t new_size) {
+  if (!f || f->type != INODE_FILE)
+    return -1;
+
+  if (new_size > BLOCK_SIZE)
+    new_size = BLOCK_SIZE;
+
+  if (new_size < f->size) {
+    memset(phase_data_blocks[f->blocks[0]] + new_size, 0, f->size - new_size);
+  }
+
+  f->size = new_size;
+
+  phase_vfs_sync();
+  return 0;
 }
 
 bool phase_vfs_rename(const char *oldpath, const char *newpath) {
@@ -301,6 +348,9 @@ extern "C" int phase_create_in_dir(phase_inode *pdir, const char *name,
 // 🔹 SECTION 10: PERSISTENCE (DISK SYNC)
 #include "../drivers/fat16.h"
 
+#define FAT16_SYSTEM_DRIVE 0
+#define FAT16_DATA_DRIVE 1
+
 // Optimization: Disable sync during bootstrap
 static bool g_phase_a_sync_enabled = true;
 
@@ -325,30 +375,73 @@ extern "C" void phase_vfs_sync() {
   offset += 4;
   memcpy(buf + offset, &phase_block_count, 4);
 
-  // Create if not exists
-  fat16_entry_t e = fat16_find_file("TRUTH.DAT");
-  if (e.filename[0] == 0) {
-    fat16_create_file("TRUTH.DAT");
-  }
+  uint8_t prev_drive = fat16_get_drive();
+  auto write_truth_on_drive = [&](uint8_t drive) {
+    fat16_set_drive(drive);
+    fat16_init();
+    fat16_entry_t e = fat16_find_file("TRUTH.DAT");
+    if (e.filename[0] == 0) {
+      fat16_create_file("TRUTH.DAT");
+    }
+    fat16_write_file("TRUTH.DAT", buf, total);
+  };
 
-  fat16_write_file("TRUTH.DAT", buf, total);
+  // Primary target: persistent data drive.
+  write_truth_on_drive(FAT16_DATA_DRIVE);
+  // Safety net: keep system drive snapshot in sync too.
+  write_truth_on_drive(FAT16_SYSTEM_DRIVE);
+
+  fat16_set_drive(prev_drive);
+  fat16_init();
   kfree(buf);
-  serial_log("FS_PHASE_A: Synced to TRUTH.DAT");
+  serial_log("FS_PHASE_A: Synced TRUTH.DAT (data+system)");
 }
 
 extern "C" void phase_vfs_load() {
-  fat16_entry_t e = fat16_find_file("TRUTH.DAT");
-  if (e.filename[0] == 0) {
-    serial_log("FS_PHASE_A: No TRUTH.DAT found, starting fresh.");
-    return;
-  }
-
   uint32_t total = phase_vfs_get_total_size();
   uint8_t *buf = (uint8_t *)kmalloc(total);
   if (!buf)
     return;
 
-  fat16_read_file(&e, buf);
+  bool loaded = false;
+  uint8_t prev_drive = fat16_get_drive();
+
+  fat16_set_drive(FAT16_DATA_DRIVE);
+  fat16_init();
+  fat16_entry_t e = fat16_find_file("TRUTH.DAT");
+
+  if (e.filename[0] != 0) {
+    fat16_read_file(&e, buf);
+    loaded = true;
+    serial_log("FS_PHASE_A: Loaded persistent state from data drive");
+  } else {
+    // One-time migration: if legacy state exists on system drive, copy to data
+    // drive.
+    fat16_set_drive(FAT16_SYSTEM_DRIVE);
+    fat16_init();
+    fat16_entry_t legacy = fat16_find_file("TRUTH.DAT");
+    if (legacy.filename[0] != 0) {
+      fat16_read_file(&legacy, buf);
+      loaded = true;
+
+      fat16_set_drive(FAT16_DATA_DRIVE);
+      fat16_init();
+      if (fat16_find_file("TRUTH.DAT").filename[0] == 0) {
+        fat16_create_file("TRUTH.DAT");
+      }
+      fat16_write_file("TRUTH.DAT", buf, total);
+      serial_log("FS_PHASE_A: Migrated TRUTH.DAT from system drive to data drive");
+    }
+  }
+
+  fat16_set_drive(prev_drive);
+  fat16_init();
+
+  if (!loaded) {
+    kfree(buf);
+    serial_log("FS_PHASE_A: No TRUTH.DAT found on data drive, starting fresh.");
+    return;
+  }
 
   uint32_t offset = 0;
   memcpy(phase_inode_table, buf + offset, sizeof(phase_inode_table));
@@ -360,31 +453,9 @@ extern "C" void phase_vfs_load() {
   memcpy(&phase_block_count, buf + offset, 4);
 
   kfree(buf);
-  serial_log("FS_PHASE_A: Loaded persistent state from TRUTH.DAT");
 }
 
-// 🔹 SECTION 11: VFS SYSTEM INTERFACE (Hooks for vfs.cpp)
-extern "C" {
-vfs_node_t *phase_a_vfs_lookup(vfs_node_t *dir, const char *name) {
-  phase_inode *parent = (phase_inode *)dir->impl;
-  if (!parent || parent->type != INODE_DIR)
-    return nullptr;
-
-  phase_dir_entry *ents =
-      (phase_dir_entry *)phase_data_blocks[parent->blocks[0]];
-  for (uint32_t i = 0; i < parent->size; i++) {
-    if (strcmp(ents[i].name, name) == 0) {
-      // Logic from wrap_phase_inode will be used in vfs.cpp
-      // But we need to return a node. This is circular.
-      // Re-implementing wrapper logic here for completeness.
-      return nullptr; // Will be handled in vfs.cpp's custom lookup
-    }
-  }
-  return nullptr;
-}
-}
-
-// 🔹 SECTION 12: BOOTSTRAP
+// 🔹 SECTION 11: BOOTSTRAP
 extern "C" void fs_phase_a_bootstrap() {
   g_phase_a_sync_enabled = false; // Disable during boot
   phase_inode_count = 0;
@@ -394,6 +465,7 @@ extern "C" void fs_phase_a_bootstrap() {
   phase_vfs_load();
 
   if (phase_inode_count > 0) {
+    g_phase_a_sync_enabled = true;
     serial_log("FS Phase A: Persistent Boot Successful.");
     return;
   }

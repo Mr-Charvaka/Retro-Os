@@ -3,10 +3,28 @@ set -e
 
 echo "Building inside WSL..."
 
+DATA_IMG="data.img"
+DATA_IMG_SIZE="128M"
+
 # Clean previous build
 find src -name "*.o" -type f -delete
 find apps -name "*.o" -type f -delete
 rm -f os.img
+
+if [ ! -f "$DATA_IMG" ]; then
+    echo "Creating persistent $DATA_IMG ($DATA_IMG_SIZE)..."
+    truncate -s "$DATA_IMG_SIZE" "$DATA_IMG"
+
+    if command -v mkfs.fat >/dev/null 2>&1; then
+        mkfs.fat -F 16 -n RETRODATA "$DATA_IMG" >/dev/null
+    elif command -v mformat >/dev/null 2>&1; then
+        mformat -i "$DATA_IMG" -F -v RETRODATA ::
+    else
+        echo "Error: mkfs.fat or mformat is required to initialize $DATA_IMG"
+        echo "Install one of: dosfstools or mtools"
+        exit 1
+    fi
+fi
 
 # Compile Apps
 echo "Compiling apps (C++)..."
@@ -96,4 +114,4 @@ truncate -s 32M os.img
 echo "Injecting Files..."
 python3 inject_wallpaper.py
 
-echo "Build Successful: os.img"
+echo "Build Successful: os.img (system) + $DATA_IMG (persistent data)"
