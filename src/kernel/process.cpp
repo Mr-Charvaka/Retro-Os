@@ -18,6 +18,29 @@ process_t *current_process = 0;
 process_t *ready_queue = 0;
 uint32_t next_pid = 1;
 
+// =============================================================================
+// FIX #3 -- "The Blind Fork CWD"
+//
+// cwd_inherit() copies a CWD string only when it is well-formed (non-empty and
+// starts with '/').  If the parent's CWD is empty, relative, or otherwise
+// invalid it means the directory has been deleted or was never valid (ghost).
+// In that case the child process falls back to '/', preventing crashes from
+// relative file operations inside a ghost directory.
+// =============================================================================
+static void cwd_inherit(char *dst, const char *src) {
+  if (src && src[0] == '/') {
+    strncpy(dst, src, 255);
+    dst[255] = '\0';
+  } else {
+    if (src && src[0] != '\0') {
+      serial_log("PROC: CWD inheritance rejected -- parent CWD is not absolute:");
+      serial_log(src);
+    }
+    dst[0] = '/';
+    dst[1] = '\0';
+  }
+}
+
 extern "C" uint32_t
     stack_top; // Asli stack ki choti (kernel_entry.asm se aayi hai)
 extern "C" void switch_task(uint32_t *old_esp, uint32_t new_esp,
@@ -49,6 +72,20 @@ void init_multitasking() {
   current_process->next = current_process;
   ready_queue = current_process;
 
+  // Setup Standard I/O (FD 0, 1, 2) for the first process
+  vfs_node_t *tty = vfs_resolve_path("/dev/tty0");
+  if (tty) {
+    file_description_t *desc = (file_description_t *)kmalloc(sizeof(file_description_t));
+    desc->node = tty;
+    desc->offset = 0;
+    desc->flags = 0x02; // O_RDWR
+    desc->ref_count = 3;
+    current_process->fd_table[0] = desc;
+    current_process->fd_table[1] = desc;
+    current_process->fd_table[2] = desc;
+    serial_log("SCHED: Standard I/O (0,1,2) hooked to /dev/tty0");
+  }
+
   serial_log("SCHED: Enabled.");
 }
 
@@ -68,8 +105,8 @@ void create_kernel_thread(void (*fn)()) {
   new_proc->time_remaining = DEFAULT_TIME_SLICE;
   new_proc->sleep_until = 0;
 
-  uint32_t *stack = (uint32_t *)kmalloc(16384);
-  uint32_t *top = stack + 4096;
+  uint32_t *stack = (uint32_t *)kmalloc(65536); // Increased to 64KB for stack-heavy libraries
+  uint32_t *top = stack + 16384;
 
   *(--top) = (uint32_t)fn;
   *(--top) = 0;
@@ -79,7 +116,7 @@ void create_kernel_thread(void (*fn)()) {
   *(--top) = 0x0202;
 
   new_proc->esp = (uint32_t)top;
-  new_proc->kernel_stack_top = (uint32_t)stack + 4096;
+  new_proc->kernel_stack_top = (uint32_t)stack + 65536;
 
   new_proc->next = current_process->next;
   current_process->next = new_proc;
@@ -108,18 +145,33 @@ void user_mode_entry(uint32_t entry, uint32_t utop) {
                : "eax");
 }
 
-extern "C" void create_user_process(const char *filename, char *const argv[]) {
+extern "C" int create_user_process(const char *filename, char *const argv[]) {
   // Disable interrupts during process creation to prevent race conditions
   uint32_t eflags;
   asm volatile("pushf; pop %0; cli" : "=r"(eflags));
 
+  // Pre-resolve path and copy strings because caller's PD will be gone soon
+  char kfilename[256];
+  strncpy(kfilename, filename, 255);
+  kfilename[255] = 0;
+
+  int argc = 0;
+  char *kargv[16];
+  if (argv) {
+    while (argv[argc] && argc < 16) {
+      kargv[argc] = (char *)kmalloc(strlen(argv[argc]) + 1);
+      strcpy(kargv[argc], argv[argc]);
+      argc++;
+    }
+  }
+
   // User process load karne ka jugad
   uint32_t phys_pd = (uint32_t)pd_create();
   if (!phys_pd) {
-    // Restore interrupts
+    for (int i = 0; i < argc; i++) kfree(kargv[i]);
     if (eflags & 0x200)
       asm volatile("sti");
-    return;
+    return -1;
   }
 
   uint32_t phys_old_pd;
@@ -134,14 +186,14 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
 
   // Detect format
   uint8_t magic[4];
-  vfs_node_t *node = vfs_resolve_path(filename);
+  vfs_node_t *node = vfs_resolve_path(kfilename);
   if (node) {
     vfs_read(node, 0, magic, 4);
     if (magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' &&
         magic[3] == 'F') {
-      entry = load_elf(filename, &top_addr);
+      entry = load_elf(kfilename, &top_addr);
     } else if (magic[0] == 'M' && magic[1] == 'Z') {
-      entry = load_pe(filename, &top_addr);
+      entry = load_pe(kfilename, &top_addr);
     } else {
       serial_log("PROC ERROR: Unknown executable format");
     }
@@ -152,12 +204,13 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
   pd_switch((uint32_t *)phys_old_pd);
 
   if (entry == 0) {
-    serial_log("PROC ERROR: Failed to load ELF");
+    serial_log("PROC ERROR: Failed to load ELF/PE");
     pd_destroy((uint32_t *)phys_pd); // Clean up new PD
+    for (int i = 0; i < argc; i++) kfree(kargv[i]);
     // Restore interrupts
     if (eflags & 0x200)
       asm volatile("sti");
-    return;
+    return -2;
   }
 
   serial_log_hex("PROC: Created user process from ", entry);
@@ -187,11 +240,13 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
     }
   }
 
-  // CWD inherit karo agar parent hai
+  // CWD inherit -- validated ghost-directory guard (Fix #3)
   if (current_process)
-    strcpy(new_proc->cwd, current_process->cwd);
-  else
-    strcpy(new_proc->cwd, "/");
+    cwd_inherit(new_proc->cwd, current_process->cwd);
+  else {
+    new_proc->cwd[0] = '/';
+    new_proc->cwd[1] = '\0';
+  }
 
   uint32_t *kstack = (uint32_t *)kmalloc(4096);
   uint32_t *ktop = kstack + 1024;
@@ -219,23 +274,15 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
   pd_switch((uint32_t *)phys_pd);
 
   uint32_t *ustack = (uint32_t *)new_proc->user_stack_top;
-  // ... (argc/argv copy logic)
-  int argc = 0;
-  if (argv) {
-    while (argv[argc])
-      argc++;
-  }
 
-  // Copy strings first
+  // Copy strings first from kernel-safe kargv
   uint32_t arg_ptrs[16]; // Max 16 args
-  if (argc > 16)
-    argc = 16;
-
   for (int i = argc - 1; i >= 0; i--) {
-    int len = strlen(argv[i]) + 1;
+    int len = strlen(kargv[i]) + 1;
     ustack = (uint32_t *)((uint32_t)ustack - len);
-    memcpy(ustack, argv[i], len);
+    memcpy(ustack, kargv[i], len);
     arg_ptrs[i] = (uint32_t)ustack;
+    kfree(kargv[i]); // Clean up kernel copy
   }
 
   // Align stack
@@ -279,10 +326,13 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
   current_process->next = new_proc;
 
   serial_log("SCHED: User Process ready hai.");
+  int pid = (int)new_proc->id;
 
   // Restore interrupts
   if (eflags & 0x200)
     asm volatile("sti");
+
+  return pid;
 }
 
 void schedule() {
@@ -389,7 +439,7 @@ int fork_process(registers_t *parent_regs) {
   child->entry_point = current_process->entry_point;
   child->user_stack_top = current_process->user_stack_top;
   child->heap_end = current_process->heap_end;
-  strcpy(child->cwd, current_process->cwd);
+  cwd_inherit(child->cwd, current_process->cwd); // Fix #3: ghost-CWD guard
   child->pledges = current_process->pledges;
 
   for (int i = 0; i < MAX_PROCESS_FILES; i++) {
@@ -887,7 +937,7 @@ int sys_posix_spawn(int *pid_out, const char *path, void *file_actions,
       new_proc->fd_table[i]->ref_count++;
   }
 
-  strcpy(new_proc->cwd, current_process->cwd);
+  cwd_inherit(new_proc->cwd, current_process->cwd); // Fix #3: ghost-CWD guard
 
   new_proc->priority = DEFAULT_PRIORITY;
   new_proc->time_slice = DEFAULT_TIME_SLICE;

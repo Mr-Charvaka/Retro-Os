@@ -1,17 +1,20 @@
 // Contracts aur Interfaces uthao shuru mein
 #include "../include/Contracts.h"
 #include "../include/KernelInterfaces.h"
-#include <fs_phase.h>
+#include "../include/fs_phase.h"
 
+#include "../drivers/ac97.h"
 #include "../drivers/acpi.h"
+#include "../drivers/ahci.h"
 #include "../drivers/bga.h"
-#include "../drivers/fat16.h"
+#include "../drivers/fat32.h"
 #include "../drivers/graphics.h"
 #include "../drivers/hpet.h"
 #include "../drivers/keyboard.h"
 #include "../drivers/mouse.h"
 #include "../drivers/pci.h"
 #include "../drivers/rtc.h"
+#include "../drivers/sb16.h"
 #include "../drivers/serial.h"
 #include "../drivers/timer.h"
 #include "../drivers/vga.h"
@@ -136,7 +139,7 @@ extern "C" void sys_get_mouse(int *x, int *y, int *btn) {
   *btn = (int)b;
 }
 
-extern "C" uint32_t tick;
+extern "C" volatile uint32_t tick;
 extern "C" uint32_t sys_time_ms() {
   return tick * 20; // 50Hz = 20ms per tick
 }
@@ -170,8 +173,7 @@ extern "C" void net_thread() {
 }
 
 extern "C" int sys_spawn(const char *path, char **argv) {
-  create_user_process(path, argv);
-  return 0;
+  return create_user_process(path, argv);
 }
 
 // Keyboard: aakhri scancode wapas karo ya -1 agar kuch nahi hai
@@ -368,22 +370,45 @@ extern "C" int main() {
   isr_install();
 
   // 1. Core Memory setup (Sabse pehle ye zaroori hai)
-  // Kernel ends at about 6.2MB (_kernel_end = 0xC062F000 = physical 0x0062F000)
-  // Placement heap at 7MB - safely beyond kernel
-  init_memory(PHYS_TO_VIRT(0x00700000)); // 7MB placement heap
+  // Kernel ends at about 8.5MB (_kernel_end = 0xC0880000 approx)
+  // Placement heap at 12MB - safely beyond kernel
+  init_memory(PHYS_TO_VIRT(0x00C00000)); // 12MB placement heap
 
-  serial_log("KERNEL: Init PMM at 8MB...");
-  uint32_t mem_size = 512 * 1024 * 1024;
-  // PMM bitmap at 8MB - safely beyond kernel end (6.2MB) and placement heap
-  // (7MB)
-  uint32_t *bitmap_addr = (uint32_t *)PHYS_TO_VIRT(0x00800000); // 8MB
+  serial_log("KERNEL: Init PMM at 14MB...");
+  uint32_t mem_size = 1024u * 1024u * 1024u; // 1 GB RAM (Matched with init_paging)
+  // PMM bitmap at 14MB
+  uint32_t *bitmap_addr = (uint32_t *)PHYS_TO_VIRT(0x00E00000); // 14MB
   pmm_init(mem_size, bitmap_addr);
 
-  pmm_mark_region_used(0x0, 0x100000);      // Low Memory (0-1MB)
-  pmm_mark_region_used(0x100000, 0x700000); // Kernel + Placement Heap (1-8MB)
-  pmm_mark_region_used(VIRT_TO_PHYS(bitmap_addr), 16384); // PMM Bitmap at 8MB
-  // pmm_mark_region_used(0x01000000, 0x20000000); // Kernel Heap Physical
-  // (512MB) - Don't mark used!
+  // -- Step A: Declare ALL physical RAM as free -----------------------------
+  // pmm_init() now starts with everything RESERVED (safe-by-default fix).
+  // We must explicitly release the range the BIOS told us is available RAM.
+  // For QEMU -m 512M this is the full 512 MB range.
+  pmm_mark_region_free(0x0, mem_size);
+
+  // -- Step B: Re-reserve regions that must never be allocated --------------
+  // The kernel starts at 0x8000 (32KB) as per linker.ld
+  uint32_t kernel_start_phys = 0x8000; 
+  uint32_t kernel_end_phys = VIRT_TO_PHYS(&_kernel_end);
+  
+  // 1. Reserve Low Memory (0-32KB) for IVT/BIOS/etc.
+  pmm_mark_region_used(0x0, kernel_start_phys);
+  
+  // 2. Reserve Kernel Image (32KB to _kernel_end)
+  pmm_mark_region_used(kernel_start_phys, kernel_end_phys - kernel_start_phys);
+
+  // 3. Mark the rest of the used range starting from kernel end (including placement heap)
+  // Placement heap starts AT kernel end, and goes for 4MB
+  uint32_t placement_phys = (kernel_end_phys + 0xFFF) & ~0xFFF;
+  pmm_mark_region_used(placement_phys, 0x400000);
+
+  // 2. Network DMA Pool Reservation (18MB - 20MB)
+  // Dedicated region for e1000 descriptors and buffers to prevent Translator conflicts
+  pmm_mark_region_used(0x01200000, 2 * 1024 * 1024);
+
+  // Bitmap addr (we placed it at 14MB earlier, but let's calculate its actual
+  // usage)
+  pmm_mark_region_used(VIRT_TO_PHYS(bitmap_addr), 65536); // PMM bitmap
 
   serial_log("KERNEL: PMM After Reservations:");
   pmm_print_stats();
@@ -425,10 +450,9 @@ extern "C" int main() {
   extern int slab_is_initialized;
   slab_is_initialized = 1;
 
-  // C++ global constructors initialize karo (vtables ke liye zaroori hai)
-  __cxx_global_ctor_init();
-
-  fat16_init();
+  ahci_init();
+  ac97_init();
+  sb16_init();
   // vfs_root = fat16_vfs_init(); // Handled by vfs_init
   // vfs_dev = devfs_init(); // Handled by vfs_init
   socket_init();
@@ -496,7 +520,7 @@ extern "C" int main() {
     create_kernel_thread(net_thread);
 
     // User space start karo - Non-GUI INIT chala rahe hain
-    create_user_process("INIT.ELF", nullptr);
+    create_user_process("/C/INIT.ELF", nullptr);
     init_timer(50);
     serial_log("KERNEL: Higher-Half Kernel Running.");
   }
