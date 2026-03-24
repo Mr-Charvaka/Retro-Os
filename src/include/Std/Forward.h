@@ -2,8 +2,10 @@
 
 #include <Std/Types.h>
 
-extern "C" void *kmalloc(size_t);
-extern "C" void kfree(void *);
+extern "C" {
+void *malloc(size_t);
+void free(void*);
+}
 
 void *operator new(size_t size);
 void *operator new[](size_t size);

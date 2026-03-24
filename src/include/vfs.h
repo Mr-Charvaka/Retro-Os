@@ -76,6 +76,7 @@ typedef struct vfs_node {
 
   struct filesystem *fs; // Which FS owns this node
   void *impl;            // Private driver data
+  void *device;          // Physical device context (FAT32 context, etc.)
 
   // Legacy / Override Pointers (For TTY, Sockets, etc.)
   uint32_t (*read)(struct vfs_node *, uint32_t, uint32_t, uint8_t *);
@@ -128,6 +129,9 @@ int vfs_is_dir(vfs_node_t *node);
 
 // Phase A Bootstrap
 void fs_phase_a_bootstrap();
+
+int vfs_get_mount_count();
+const char *vfs_get_mount_path(int i);
 
 #ifdef __cplusplus
 }

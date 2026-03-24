@@ -1,8 +1,9 @@
 #include "include/libc.h"
 #include "include/stdio.h"
 #include "include/types.h"
+extern "C" void exit(int);
 
-int main(int argc, char *argv[]) {
+extern "C" void _start(int argc, char *argv[]) {
   char path[256];
   if (argc > 1) {
     strcpy(path, argv[1]);
@@ -15,7 +16,7 @@ int main(int argc, char *argv[]) {
     fputs("ls: cannot access '", stdout);
     fputs(path, stdout);
     fputs("': No such directory\n", stdout);
-    return 1;
+    exit(1);
   }
 
   struct dirent de;
@@ -39,5 +40,5 @@ int main(int argc, char *argv[]) {
   fputs("\n", stdout);
 
   close(fd);
-  return 0;
+  exit(0);
 }

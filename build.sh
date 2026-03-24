@@ -3,30 +3,78 @@ set -e
 
 echo "Building inside WSL..."
 
+# Newlib Headers Path
+NEWLIB_INC="src/libc/newlib/newlib/libc/include"
+NETSURF_INC="-I apps/netsurf -I apps/netsurf/libparserutils -I apps/netsurf/libwapcaplet -I apps/netsurf/hubbub -I apps/netsurf/libcss -I apps/netsurf/libdom -I apps/netsurf/libnsfb -I apps/netsurf/libcurl -I apps/netsurf/image"
+APP_INC="-I $NEWLIB_INC -I src/include $NETSURF_INC -D_LIBC_SKIP_STANDARD_FUNCS"
+CORE_INC="-I src/include $NETSURF_INC -D_LIBC_SKIP_STANDARD_FUNCS"
+
 # Clean previous build
 find src -name "*.o" -type f -delete
 find apps -name "*.o" -type f -delete
+find src/libc/posix -name "*.o" -delete || true
 rm -f os.img
 
-# Compile Apps
-echo "Compiling apps (C++)..."
+# 0. Compile Newlib Stubs first (needed by apps)
+echo "Compiling Newlib Stubs..."
+g++ -m32 -ffreestanding -fno-rtti -fno-exceptions $APP_INC -c src/libc/new_stubs.cpp -o src/libc/new_stubs.o
 
-# Function to build an app
+# 0b. Compile Pure Newlib POSIX implementations from source
+echo "Compiling Pure Newlib POSIX logic..."
+find src/libc/posix -name "*.c" ! -name "printf.c" ! -name "vfprintf.c" ! -name "puts.c" ! -name "fputs.c" ! -name "nano-vfprintf.c" | while read -r file; do
+    echo "  Compiling Newlib Source: $file..."
+    outfile="${file%.c}.o"
+    gcc -m32 -ffreestanding -O2 -fno-stack-protector -fno-builtin -I src/libc/newlib/newlib/libc/include -I src/libc/newlib/newlib/libc/stdio -I src/libc/newlib/newlib/libc/stdlib -I src/libc/newlib/newlib/libc/string -I src/include -DINTERNAL_NEWLIB -D_REENT_ONLY -D_COMPILING_NEWLIB -D_SSP_NOT_USED -D_FORTIFY_SOURCE=0 -D"__inhibit_loop_to_libcall=" -DPREFER_SIZE_OVER_SPEED -DDEFINE_MALLOC -DDEFINE_FREE -DDEFINE_REALLOC -DDEFINE_CALLOC -DDEFINE_MALLOC_USABLE_SIZE -c "$file" -o "$outfile"
+done
+LIBC_POSIX_OBJS=$(find src/libc/posix -name "*.o")
+
+# 1. Compile C Sources (Excluding libc which we build as stubs)
+echo "Compiling Core Sources..."
+find src -name "*.cpp" -not -path "*litehtml*" -not -path "*sb16_new*" -not -path "*dillo*" -not -path "*v8*" -not -path "*src/libc*" | while read -r file; do
+    echo "  Compiling $file..."
+    outfile="${file%.cpp}.o"
+    g++ -ffreestanding -m32 -fno-pie -fno-pic -fno-stack-protector -Os -fno-rtti -fno-exceptions -std=c++20 -g $CORE_INC -Wno-address-of-packed-member -c "$file" -o "$outfile"
+done
+
+find src -name "*.c" -not -path "*litehtml*" -not -path "*sb16_new*" -not -path "*dillo*" -not -path "*v8*" -not -path "*src/libc*" | while read -r file; do
+    echo "  Compiling $file..."
+    outfile="${file%.c}.o"
+    gcc -ffreestanding -m32 -fno-pie -fno-pic -fno-stack-protector -Os -g $CORE_INC -Wno-address-of-packed-member -c "$file" -o "$outfile"
+done
+
+# 2. Compile Assembly Sources
+echo "Compiling Assembly sources (nasm)..."
+nasm src/boot/boot.asm -f bin -o src/boot/boot.bin -I src/boot/
+nasm src/boot/kernel_entry.asm -f elf32 -o src/boot/kernel_entry.o
+nasm src/kernel/interrupt.asm -f elf32 -o src/kernel/interrupt.o
+nasm src/kernel/process_asm.asm -f elf32 -o src/kernel/process_asm.o
+nasm src/kernel/gdt_asm.asm -f elf32 -o src/kernel/gdt_asm.o
+nasm src/kernel/setjmp.asm -f elf32 -o src/kernel/setjmp.o
+
+# 3. Compile App libraries
+echo "Compiling App libraries..."
+g++ -m32 -ffreestanding -fno-rtti -fno-exceptions -I apps/ -I apps/include $APP_INC -c apps/minimal_os_api.cpp -o apps/minimal_os_api.o
+g++ -m32 -ffreestanding -fno-rtti -fno-exceptions -I apps/ -I apps/include $APP_INC -c apps/Contracts.cpp -o apps/Contracts.o
+
+# 3b. Compile NetSurf Libraries
+echo "Compiling NetSurf Libraries..."
+find apps/netsurf -name "*.cpp" | while read -r file; do
+    echo "  Compiling NetSurf: $file..."
+    outfile="${file%.cpp}.o"
+    g++ -ffreestanding -m32 -fno-pie -fno-pic -fno-stack-protector -Os -fno-rtti -fno-exceptions -std=c++20 -g $APP_INC -c "$file" -o "$outfile"
+done
+NETSURF_OBJS=$(find apps/netsurf -name "*.o")
+
+# 4. Build Applications
 build_app() {
-    echo "  Building apps/$1.cpp..."
-    g++ -m32 -ffreestanding -fno-rtti -fno-exceptions -I apps/ -I apps/include -I src/include -D__APP__ -c "apps/$1.cpp" -o "apps/$1.o"
-    ld -m elf_i386 -T apps/linker.ld -o "apps/$1.elf" "apps/$1.o" apps/posix_impl.o apps/minimal_os_api.o apps/Contracts.o
+    echo "  Building apps/$1.elf..."
+    g++ -m32 $APP_INC -ffreestanding -fno-rtti -fno-exceptions -fno-pie -fno-pic -fno-stack-protector -I apps/ -I apps/include -I edge264_port -D__APP__ -c "apps/$1.cpp" -o "apps/$1.o"
+    ld -m elf_i386 -T apps/linker.ld -o "apps/$1.elf" "apps/$1.o" apps/minimal_os_api.o apps/Contracts.o src/libc/new_stubs.o $LIBC_POSIX_OBJS $NETSURF_OBJS
 }
 
-# Core Libs for Apps
-g++ -m32 -ffreestanding -fno-rtti -fno-exceptions -I apps/ -I apps/include -I src/include -c apps/posix_impl.cpp -o apps/posix_impl.o
-g++ -m32 -ffreestanding -fno-rtti -fno-exceptions -I apps/ -I apps/include -I src/include -c apps/minimal_os_api.cpp -o apps/minimal_os_api.o
-g++ -m32 -ffreestanding -fno-rtti -fno-exceptions -I apps/ -I apps/include -I src/include -c apps/Contracts.cpp -o apps/Contracts.o
-
-# Build Applications
+echo "Compiling applications..."
 build_app "hello"
 build_app "init"
-# build_app "calc"
 build_app "df"
 build_app "textview"
 build_app "file_utils"
@@ -35,77 +83,30 @@ build_app "terminal"
 build_app "ls"
 build_app "cat"
 build_app "mkdir"
-build_app "notepad"
-build_app "word"
-build_app "excel"
-build_app "powerpoint"
-mv apps/powerpoint.elf apps/ppt.elf || true
-# build_app "videoplayer"
 build_app "test"
 build_app "ping"
 build_app "tcptest"
 build_app "wavplay"
-build_app "chrome_installer"
-# build_app "explorer"
+build_app "chaos"
+build_app "audio_demo"
+build_app "libc_demo"
+build_app "net_test"
+build_app "netsurf_demo"
 
-echo "  Building apps/posix_test.cpp..."
-g++ -m32 -ffreestanding -fno-rtti -fno-exceptions -I apps/ -I apps/include -I src/include -D__APP__ -c apps/posix_test.cpp -o apps/posix_test.o
-ld -m elf_i386 -T apps/linker.ld -o apps/posix_test.elf apps/posix_test.o apps/posix_impl.o
-
-echo "  Building apps/posix_suite.cpp..."
-g++ -m32 -ffreestanding -fno-rtti -fno-exceptions -I apps/ -I apps/include -I src/include -D__APP__ -c apps/posix_suite.cpp -o apps/posix_suite.o
-ld -m elf_i386 -T apps/linker.ld -o apps/posix_suite.elf apps/posix_suite.o apps/posix_impl.o
-
-
-# Compile Bootloader
-echo "Compiling boot.asm..."
-nasm src/boot/boot.asm -f bin -o src/boot/boot.bin -I src/boot/
-
-# Compile Kernel Entry
-echo "Compiling kernel_entry.asm..."
-nasm src/boot/kernel_entry.asm -f elf32 -o src/boot/kernel_entry.o
-
-echo "Compiling interrupt.asm..."
-nasm src/kernel/interrupt.asm -f elf32 -o src/kernel/interrupt.o
-
-echo "Compiling process_asm.asm..."
-nasm src/kernel/process_asm.asm -f elf32 -o src/kernel/process_asm.o
-
-echo "Compiling gdt_asm.asm..."
-nasm src/kernel/gdt_asm.asm -f elf32 -o src/kernel/gdt_asm.o
-
-echo "Compiling setjmp.asm..."
-nasm src/kernel/setjmp.asm -f elf32 -o src/kernel/setjmp.o
-
-# Compile C Sources
-echo "Compiling Sources..."
-find src -name "*.cpp" -not -path "*litehtml*" -not -path "*sb16_new*" -not -path "*dillo*" -not -path "*v8*" | while read -r file; do
-    echo "  Compiling $file..."
-    outfile="${file%.cpp}.o"
-    g++ -ffreestanding -m32 -fno-pie -fstack-protector-strong -Os -fno-rtti -fno-exceptions -std=c++20 -g -I src/include -c "$file" -o "$outfile"
-done
-
-find src -name "*.c" -not -path "*litehtml*" -not -path "*sb16_new*" -not -path "*dillo*" -not -path "*v8*" | while read -r file; do
-    echo "  Compiling $file..."
-    outfile="${file%.c}.o"
-    gcc -ffreestanding -m32 -fno-pie -fstack-protector-strong -Os -g -I src/include -c "$file" -o "$outfile"
-done
-
-#echo "  Compiling MuJS (v8)..."
-#gcc -ffreestanding -m32 -nostdinc -fno-pie -fstack-protector-strong -Os -g -I src/include -I src/kernel/v8/mujs -c src/kernel/v8/mujs/one.c -o src/kernel/v8/mujs/one.o
-
-# Link
-echo "Linking..."
-OBJ_FILES=$(find src -name "*.o" ! -name "kernel_entry.o")
+# 5. Link Kernel
+echo "Linking Kernel with NetSurf libraries..."
+NETSURF_OBJS=$(find apps/netsurf -name "*.o")
+OBJ_FILES="$(find src -name "*.o" ! -name "kernel_entry.o" ! -path "src/libc/*") $NETSURF_OBJS"
 ld -m elf_i386 -o src/kernel/kernel.bin -T linker.ld src/boot/kernel_entry.o $OBJ_FILES --oformat binary
 
-# Create OS Image
-echo "Creating os.img..."
-cat src/boot/boot.bin src/kernel/kernel.bin > os.img
-truncate -s 32M os.img
-
-# Inject Files
-echo "Injecting Files..."
+# 6. Create OS Image
+echo "Creating HDD.img..."
+truncate -s 50G HDD.img
+dd if=src/boot/boot.bin of=HDD.img conv=notrunc
+dd if=src/kernel/kernel.bin of=HDD.img bs=512 seek=1 conv=notrunc
 python3 inject_wallpaper.py
 
-echo "Build Successful: os.img"
+echo "Build Successful: HDD.img"
+rm -f os.img
+ln -sf HDD.img os.img
+echo "Linked: os.img -> HDD.img"

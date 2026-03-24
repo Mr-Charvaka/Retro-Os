@@ -1,7 +1,7 @@
 extern "C" {
 #include "../include/string.h"
 
-void *memcpy(void *dest, const void *src, int count) {
+void *memcpy(void *dest, const void *src, uint32_t count) {
   // Optimization: Copy 32-bit words if aligned
   if (count >= 4 && ((uint32_t)dest & 3) == 0 && ((uint32_t)src & 3) == 0) {
     uint32_t *d32 = (uint32_t *)dest;
@@ -23,7 +23,7 @@ void *memcpy(void *dest, const void *src, int count) {
   return dest;
 }
 
-void *memmove(void *dest, const void *src, int count) {
+void *memmove(void *dest, const void *src, uint32_t count) {
   char *d = (char *)dest;
   const char *s = (const char *)src;
   if (d < s) {
@@ -38,10 +38,10 @@ void *memmove(void *dest, const void *src, int count) {
   return dest;
 }
 
-void *memset(void *dest, char val, int count) {
+void *memset(void *dest, int val, uint32_t count) {
   char *dest8 = (char *)dest;
   while (count--) {
-    *dest8++ = val;
+    *dest8++ = (char)val;
   }
   return dest;
 }
@@ -108,7 +108,7 @@ char *strcpy(char *dest, const char *src) {
   return temp;
 }
 
-int memcmp(const void *s1, const void *s2, int n) {
+int memcmp(const void *s1, const void *s2, uint32_t n) {
   const unsigned char *p1 = (const unsigned char *)s1;
   const unsigned char *p2 = (const unsigned char *)s2;
   while (n--) {
@@ -136,7 +136,7 @@ char *strcat(char *dest, const char *src) {
   return dest;
 }
 
-char *strncpy(char *dest, const char *src, int n) {
+char *strncpy(char *dest, const char *src, uint32_t n) {
   char *temp = dest;
   while (n > 0 && (*dest++ = *src++)) {
     n--;
@@ -148,7 +148,7 @@ char *strncpy(char *dest, const char *src, int n) {
   return temp;
 }
 
-int strncmp(const char *s1, const char *s2, int n) {
+int strncmp(const char *s1, const char *s2, uint32_t n) {
   while (n > 0 && *s1 && (*s1 == *s2)) {
     s1++;
     s2++;

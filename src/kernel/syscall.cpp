@@ -2,6 +2,9 @@
 #include "syscall.h"
 #include "../drivers/rtc.h"
 #include "../drivers/serial.h"
+#include "../drivers/sb16.h"
+#include "../drivers/ac97.h"
+#include "../drivers/pcspeaker.h"
 #include "../include/errno.h"
 #include "../include/signal.h"
 #include "../include/string.h"
@@ -10,6 +13,8 @@
 #include "memory.h"
 #include "net_advanced.h"
 #include "paging.h"
+#include "../drivers/ac97.h"
+#include "../drivers/pcspeaker.h"
 #include "pipe.h"
 #include "pmm.h"
 #include "process.h"
@@ -24,15 +29,15 @@ struct iovec {
   size_t iov_len;
 };
 
+extern "C" int vfs_get_disk_usage(const char *path, uint32_t *total,
+                                  uint32_t *free);
+
 #define AT_FDCWD -100
 
-// Bahar ke FAT16 functions
-extern "C" int fat16_create_file(const char *filename);
-extern "C" void fat16_get_stats_bytes(uint32_t *total_bytes,
-                                      uint32_t *free_bytes);
+#include "../drivers/fat32.h"
 
 // Timer wala tick counter
-extern uint32_t tick;
+extern volatile uint32_t tick;
 
 // System ki details (Abhi toh yahi hai)
 static char system_hostname[64] = "retro-os";
@@ -472,8 +477,10 @@ int sys_statfs_call(registers_t *regs) {
   uint32_t *free = (uint32_t *)regs->ecx;
   uint32_t *block_size = (uint32_t *)regs->edx;
   if (block_size)
-    *block_size = 1; // Block size 1 byte rakh rahe hain abhi ke liye
-  fat16_get_stats_bytes(total, free);
+    *block_size = 512; // Sector size is 512 bytes
+  if (vfs_root && vfs_root->device) {
+      fat32_get_stats((fat32_context_t*)vfs_root->device, total, free);
+  }
   return 0;
 }
 
@@ -1317,6 +1324,58 @@ int sys_setrlimit_call(registers_t *regs) {
 // ============================================================================
 // Syscall Table aur Handler (Yahan declare kiye taaki sab dikhe)
 // ============================================================================
+int sys_get_disk_usage_call(registers_t *regs) {
+  const char *path = (const char *)regs->ebx;
+  uint32_t *total = (uint32_t *)regs->ecx;
+  uint32_t *free = (uint32_t *)regs->edx;
+
+  if (!validate_user_pointer(path, 1) || !validate_user_pointer(total, 4) ||
+      !validate_user_pointer(free, 4))
+    return -EFAULT;
+
+  return vfs_get_disk_usage(path, total, free);
+}
+
+extern "C" int sys_audio_play_call(registers_t *regs) {
+  if (!validate_user_pointer((void *)regs->ebx, regs->ecx))
+    return -EFAULT;
+  ac97_play(VIRT_TO_PHYS(regs->ebx), regs->ecx);
+  return 0;
+}
+
+extern "C" int sys_speaker_pcm_call(registers_t *regs) {
+  if (!validate_user_pointer((void *)regs->ebx, regs->ecx))
+    return -EFAULT;
+  extern bool g_sb16_present;
+  if (g_sb16_present) {
+    sb16_play_8bit((uint8_t *)regs->ebx, regs->ecx, 22050);
+  } else {
+    flagship_speaker_pcm((const uint8_t *)regs->ebx, regs->ecx);
+  }
+  return 0;
+}
+
+extern "C" int sys_audio_init_call(registers_t *regs) {
+  (void)regs;
+  // Return a fixed DMA-safe buffer in user space mapping
+  // We use 0x01E00000 (part of identity mapping)
+  return 0x01E00000;
+}
+
+extern "C" int sys_audio_cstatus_call(registers_t *regs) {
+  (void)regs;
+  return sys_audio_cstatus();
+}
+
+extern "C" int sys_audio_shutdown_call(registers_t *regs) {
+  (void)regs;
+  extern bool g_sb16_present;
+  if (g_sb16_present) {
+    sb16_write(0xD3); // Speaker Off
+  }
+  return 0;
+}
+
 static syscall_ptr syscall_table[256] = {
     sys_print_serial,   // 0
     sys_get_pid,        // 1
@@ -1459,7 +1518,9 @@ static syscall_ptr syscall_table[256] = {
     sys_tcsetattr_call, // 132
     sys_select_call,    // 133
     sys_poll_call,      // 134
-    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    sys_audio_play_call,  // 135
+    sys_speaker_pcm_call, // 136
+    nullptr, nullptr, nullptr, nullptr,
     // Phase 11-12: Memory/Config
     sys_mprotect_call,        // 141
     sys_msync_call,           // 142
@@ -1479,7 +1540,12 @@ static syscall_ptr syscall_table[256] = {
     sys_tcp_test_call,        // 156
     sys_dns_resolve_call,     // 157
     sys_http_get_call,        // 158
-    sys_net_status_call       // 159
+    sys_net_status_call,      // 159
+    sys_get_disk_usage_call,  // 160
+    nullptr,                  // 161
+    sys_audio_init_call,      // 162
+    sys_audio_cstatus_call,   // 163
+    sys_audio_shutdown_call   // 164
 };
 
 static const int num_syscalls = sizeof(syscall_table) / sizeof(syscall_ptr);
@@ -1487,6 +1553,8 @@ static const int num_syscalls = sizeof(syscall_table) / sizeof(syscall_ptr);
 void init_syscalls() { register_interrupt_handler(0x80, syscall_handler); }
 
 void syscall_handler(registers_t *regs) {
+  asm volatile("sti"); // ENABLE INTERRUPTS DURING SYSCALL HANDLING!
+
   if (regs->eax < (uint32_t)num_syscalls && syscall_table[regs->eax]) {
     serial_log_hex("SYSCALL: Called ID ", regs->eax);
     regs->eax = syscall_table[regs->eax](regs);

@@ -1,10 +1,12 @@
 #include "include/libc.h"
 #include "include/stdio.h"
 
-int main(int argc, char *argv[]) {
+extern "C" void exit(int);
+
+extern "C" void _start(int argc, char *argv[]) {
   if (argc < 2) {
     fputs("usage: mkdir <directory>\n", stdout);
-    return 1;
+    exit(1);
   }
 
   for (int i = 1; i < argc; i++) {
@@ -15,5 +17,5 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  return 0;
+  exit(0);
 }

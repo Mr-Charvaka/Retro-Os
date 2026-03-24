@@ -12,7 +12,7 @@
 
 extern "C" {
 
-extern uint32_t tick;
+extern volatile uint32_t tick;
 #define TICKS_PER_SEC 100
 
 // ============================================================================

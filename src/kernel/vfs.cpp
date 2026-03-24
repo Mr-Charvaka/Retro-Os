@@ -1,5 +1,6 @@
 #include "../include/vfs.h"
 #include "../drivers/serial.h"
+#include "../drivers/fat32.h"
 #include "../include/kernel_fs.h"
 #include "../include/kernel_fs_phase3.h"
 #include "../include/kernel_vfs_phase4.h"
@@ -7,6 +8,7 @@
 #include "../include/string.h"
 #include "heap.h"
 #include "memory.h"
+#include "tty.h"
 
 extern "C" {
 
@@ -72,10 +74,23 @@ int ramfs_create(vfs_node_t *parent, const char *name, int type) {
   return 0;
 }
 
+static char tolower(char c) {
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    return c;
+}
+
+static int stricmp(const char *s1, const char *s2) {
+    while (*s1 && (tolower(*s1) == tolower(*s2))) {
+        s1++;
+        s2++;
+    }
+    return (int)(tolower(*s1) - tolower(*s2));
+}
+
 vfs_node_t *ramfs_lookup(vfs_node_t *dir, const char *name) {
   vfs_node_t *current = dir->children;
   while (current) {
-    if (strcmp(current->name, name) == 0) {
+    if (stricmp(current->name, name) == 0) {
       return current;
     }
     current = current->next_sibling;
@@ -117,7 +132,14 @@ struct filesystem fs_ram = {.name = "ramfs",
                             .create = ramfs_create,
                             .read = ramfs_read,
                             .write = ramfs_write,
-                            .readdir = ramfs_readdir};
+                             .readdir = ramfs_readdir};
+ 
+static uint32_t vfs_tty_write(vfs_node_t *node, uint32_t offset, uint32_t size, uint8_t *buffer) {
+    return tty_write(tty_get_console(), (const char*)buffer, size);
+}
+static uint32_t vfs_tty_read(vfs_node_t *node, uint32_t offset, uint32_t size, uint8_t *buffer) {
+    return tty_read(tty_get_console(), (char*)buffer, size);
+}
 
 extern "C" int phase_create_in_dir(void *pdir, const char *name, int type);
 
@@ -143,9 +165,19 @@ void vfs_mount(const char *path, struct filesystem *fs, void *device) {
   if (mount_count >= MAX_MOUNTS)
     return;
 
-  // Create root for this mount
-  vfs_node_t *root = alloc_node("root", VFS_DIRECTORY);
-  root->fs = fs;
+  vfs_node_t *root = (vfs_node_t *)device;
+  if (!root) {
+      root = alloc_node("root", VFS_DIRECTORY);
+      root->fs = fs;
+  }
+
+  // Link mount point into VFS tree if possible (only simple paths like /C handled here)
+  if (path[0] == '/' && strlen(path) > 1 && path[1] != '/' && vfs_root) {
+      strncpy(root->name, path + 1, 255);
+      root->parent = vfs_root;
+      root->next_sibling = vfs_root->children;
+      vfs_root->children = root;
+  }
 
   strncpy(mounts[mount_count].path, path, 255);
   mounts[mount_count].fs = fs;
@@ -262,7 +294,7 @@ vfs_node_t *vfs_resolve_path_relative(vfs_node_t *base, const char *path) {
 
   // Try Phase A (Authority Layer) first for absolute paths
   if (path[0] == '/') {
-    // Optimization: Don't resolve root node as wrapped, use vfs_root (FAT16)
+    // Optimization: Don't resolve root node as wrapped, use vfs_root (FAT32)
     // for / so lookups can still find things on the physical disk.
     if (strcmp(path, "/") == 0) {
       return vfs_root;
@@ -291,30 +323,42 @@ vfs_node_t *vfs_resolve_path_relative(vfs_node_t *base, const char *path) {
     if (token[0] == 0)
       break; // End of path
 
-    // Check legacy finddir first
-    vfs_node_t *next = 0;
-    if (current->finddir) {
-      next = current->finddir(current, token);
-    }
-    // Then check FS lookup
-    else if (current->fs && current->fs->lookup) {
-      next = current->fs->lookup(current, token);
-    }
-    // Phase A Fallback for vfs_root (FAT16) lookup
-    else if (current == vfs_root) {
-      // Special case: if we are at root, also check Phase A
-      char subpath[MAX_PATH];
-      strcpy(subpath, "/");
-      strcat(subpath, token);
-      phase_inode *pinode = phase_vfs_resolve(subpath);
-      if (pinode) {
-        next = wrap_phase_inode(pinode, token);
-      }
-    }
-    // Then check children manual walk
+    serial_log("VFS: Resolving component: ");
+    serial_log(token);
 
-    if (!next)
-      return 0; // Not found
+    // --- FLAGSHIP CACHE LOOKUP ---
+    vfs_node_t *next = 0;
+    
+    // Check if child is already in the memory-resident cache
+    vfs_node_t *cached = current->children;
+    while (cached) {
+        if (strcmp(cached->name, token) == 0) {
+            next = cached;
+            break;
+        }
+        cached = cached->next_sibling;
+    }
+
+    if (!next) {
+        // Not in cache, ask the driver
+        if (current->finddir) {
+            next = current->finddir(current, token);
+        } else if (current->fs && current->fs->lookup) {
+            next = current->fs->lookup(current, token);
+        }
+
+        // If found by driver, add to cache (isolated in memory)
+        if (next) {
+            next->parent = current;
+            next->next_sibling = current->children;
+            current->children = next;
+        }
+    }
+    if (!next) {
+        serial_log("VFS ERROR: Could not resolve: ");
+        serial_log(token);
+        return 0; // Not found
+    }
     current = next;
   }
 
@@ -430,138 +474,144 @@ struct dirent *vfs_readdir(vfs_node_t *node, uint32_t index) {
 // INIT
 // ============================================================================
 
-extern "C" vfs_node_t *fat16_vfs_init();
-extern "C" vfs_node_t *fathdd_vfs_init();
+extern "C" vfs_node_t *fat32_vfs_init(fat32_context_t *ctx);
 
+extern "C" void phase_a_set_sync(bool enabled);
+
+fat32_context_t *system_fat32_ctx = nullptr;
+
+#include "../include/mbr.h"
+#include "../drivers/ntfs.h"
 void vfs_init() {
-  // 1. Initialize Root FS (Prefer FAT16 if available)
-  vfs_root = fat16_vfs_init();
+  serial_log("VFS: Flagship Initialisation Sequence...");
 
-  if (!vfs_root) {
-    serial_log("VFS: FAT16 not found, falling back to RAMFS.");
-    vfs_root = alloc_node("/", VFS_DIRECTORY);
-    vfs_root->fs = &fs_ram;
-    vfs_mount("/", &fs_ram, 0);
+  // 1. Initialise RAMFS for root
+  vfs_root = alloc_node("/", VFS_DIRECTORY);
+  vfs_root->fs = &fs_ram;
+  vfs_mount("/", &fs_ram, 0);
+
+  // 2. Initialise Phase A persistence system
+  fs_phase_a_bootstrap();
+
+  // 3. Mount Physical Partitions
+  partition_info_t parts[MAX_PARTITIONS_PER_DISK];
+  
+  // -- Drive 0 (Primary) --
+  int n0 = mbr_enumerate_partitions(0, parts, MAX_PARTITIONS_PER_DISK);
+  if (n0 > 0) {
+      for (int i = 0; i < n0; i++) {
+          if (parts[i].type == PART_TYPE_FAT32 || parts[i].type == PART_TYPE_FAT32_LBA) {
+              fat32_context_t *ctx = fat32_mount(0, parts[i].start_lba);
+              if (ctx) {
+                  vfs_node_t *r = fat32_vfs_init(ctx);
+                  if (i == 0) { vfs_mount("/C", r->fs, r); system_fat32_ctx = ctx; }
+                  else { char path[4] = "/D"; path[2] = 'D' + (i-1); vfs_mount(path, r->fs, r); }
+              }
+          }
+      }
   } else {
-    serial_log("VFS: FAT16 Root active.");
-    // Initialize Phase A RAM FS for guaranteed Desktop paths
-    fs_phase_a_bootstrap();
+      fat32_context_t *raw = fat32_mount(0, 0);
+      if (raw) { vfs_node_t *r = fat32_vfs_init(raw); vfs_mount("/C", r->fs, r); system_fat32_ctx = raw; }
   }
 
-  // 2. Standard Layout
-  serial_log("VFS: Checking standard paths...");
-  // 2. Standard Layout
-  if (!vfs_resolve_path("/home")) {
-    vfs_create("/home", VFS_DIRECTORY);
-  }
-  if (!vfs_resolve_path("/home/user")) {
-    vfs_create("/home/user", VFS_DIRECTORY);
-  }
-  if (!vfs_resolve_path("/home/user/Desktop")) {
-    vfs_create("/home/user/Desktop", VFS_DIRECTORY);
-  }
-  if (!vfs_resolve_path("/home/user/Downloads")) {
-    vfs_create("/home/user/Downloads", VFS_DIRECTORY);
-  }
-  if (!vfs_resolve_path("/system")) {
-    vfs_create("/system", VFS_DIRECTORY);
-  }
-  if (!vfs_resolve_path("/dev")) {
-    vfs_create("/dev", VFS_DIRECTORY);
+  // -- Drive 1 (Secondary) --
+  int n1 = mbr_enumerate_partitions(1, parts, MAX_PARTITIONS_PER_DISK);
+  if (n1 > 0) {
+      vfs_create("/storage", VFS_DIRECTORY);
+      for (int i = 0; i < n1; i++) {
+          char mount_path[32];
+          char pnum[8];
+          strcpy(mount_path, "/storage/p");
+          itoa(i + 1, pnum, 10);
+          strcat(mount_path, pnum);
+          
+          vfs_create(mount_path, VFS_DIRECTORY);
+
+          if (parts[i].type == PART_TYPE_FAT32 || parts[i].type == PART_TYPE_FAT32_LBA) {
+              fat32_context_t *ctx = fat32_mount(1, parts[i].start_lba);
+              if (ctx) {
+                  vfs_node_t *r = fat32_vfs_init(ctx);
+                  vfs_mount(mount_path, r->fs, r);
+                  serial_log("VFS: Mounted FAT32 Partition at ");
+                  serial_log(mount_path);
+              }
+          } else if (parts[i].type == PART_TYPE_NTFS) {
+              ntfs_context_t *ctx = ntfs_mount(1, parts[i].start_lba);
+              if (ctx) { 
+                  vfs_node_t *r = ntfs_vfs_init(ctx); 
+                  if (r) { 
+                      vfs_mount(mount_path, &fs_ram, r); 
+                      serial_log("VFS: Mounted NTFS Partition at ");
+                      serial_log(mount_path);
+                  }
+              }
+          }
+      }
   }
 
-  // 3. Windows Compatibility Environment (Drive C:)
-  serial_log("VFS: Setting up Windows compatibility environment...");
-  if (!vfs_resolve_path("/C")) {
-    vfs_create("/C", VFS_DIRECTORY);
+  serial_log("VFS_INIT: Creating standard paths...");
+  phase_a_set_sync(false);
+
+  vfs_create("/home", VFS_DIRECTORY);
+  vfs_create("/home/user", VFS_DIRECTORY);
+  vfs_create("/home/user/Desktop", VFS_DIRECTORY);
+  // Flagship Shortcuts (Physical Files)
+  vfs_create("/home/user/Desktop/Explorer.lnk", VFS_FILE);
+  vfs_create("/home/user/Desktop/Terminal.lnk", VFS_FILE);
+  vfs_create("/home/user/Desktop/Calculator.lnk", VFS_FILE);
+  vfs_create("/home/user/Desktop/Browser.lnk", VFS_FILE);
+  vfs_create("/home/user/Desktop/NetTest.lnk", VFS_FILE);
+  // Removed office, notepad & browser shortcuts
+  vfs_create("/home/user/Documents", VFS_DIRECTORY);
+  vfs_create("/home/user/Pictures", VFS_DIRECTORY);
+  vfs_create("/home/user/Music", VFS_DIRECTORY);
+  vfs_create("/home/user/Videos", VFS_DIRECTORY);
+  vfs_create("/home/user/Downloads", VFS_DIRECTORY);
+  vfs_create("/home/user/Projects", VFS_DIRECTORY);
+  vfs_create("/system", VFS_DIRECTORY);
+  // System-internal directories (Stay in RAMFS for speed and consistency)
+  ramfs_create(vfs_root, "dev", VFS_DIRECTORY);
+  ramfs_create(vfs_root, "tmp", VFS_DIRECTORY);
+  
+  vfs_dev = vfs_resolve_path("/dev");
+  if (vfs_dev) {
+    ramfs_create(vfs_dev, "tty", VFS_DEVICE);
+    vfs_node_t *tty_node = vfs_resolve_path("/dev/tty");
+    if (tty_node) {
+        tty_node->write = vfs_tty_write;
+        tty_node->read = vfs_tty_read;
+    }
   }
 
-  // NETFS: Mount Host PC folder as /C/Network
+  vfs_create("/C/Windows", VFS_DIRECTORY);
+  vfs_create("/C/Windows/System32", VFS_DIRECTORY);
+
+  // NETFS
   netfs_init();
   vfs_node_t *net_node = netfs_mount("10.0.2.2", "Network");
   if (net_node) {
-    vfs_node_t *c_node = vfs_resolve_path("/C");
-    if (c_node) {
-      net_node->parent = c_node;
-      // Add to children list manually for simple VFS
-      net_node->next_sibling = c_node->children;
-      c_node->children = net_node;
-      serial_log("VFS: Network Drive mounted at /C/Network");
-    }
+      vfs_node_t *c_node = vfs_resolve_path("/C");
+      if (c_node) {
+          net_node->parent = c_node;
+          net_node->next_sibling = c_node->children;
+          c_node->children = net_node;
+      }
   }
 
-  // HDD: Mount Extra IDE drive at /hdd
-  vfs_node_t *hdd_node = fathdd_vfs_init();
-  if (hdd_node) {
-    hdd_node->parent = vfs_root;
-    hdd_node->next_sibling = vfs_root->children;
-    vfs_root->children = hdd_node;
-    // Rename root node for HDD slightly so lookup can resolve /hdd
-    strcpy(hdd_node->name, "hdd");
-    serial_log("VFS: Extra HDD mounted at /hdd");
-  }
-
-  if (!vfs_resolve_path("/C/Windows")) {
-    vfs_create("/C/Windows", VFS_DIRECTORY);
-  }
-  if (!vfs_resolve_path("/C/Windows/System32")) {
-    vfs_create("/C/Windows/System32", VFS_DIRECTORY);
-  }
-  if (!vfs_resolve_path("/C/Program Files")) {
-    vfs_create("/C/Program Files", VFS_DIRECTORY);
-  }
-  if (!vfs_resolve_path("/C/Program Files/Google")) {
-    vfs_create("/C/Program Files/Google", VFS_DIRECTORY);
-  }
-  if (!vfs_resolve_path("/C/Program Files/Google/Chrome")) {
-    vfs_create("/C/Program Files/Google/Chrome", VFS_DIRECTORY);
-  }
-  if (!vfs_resolve_path("/C/Program Files/Google/Chrome/Application")) {
-    vfs_create("/C/Program Files/Google/Chrome/Application", VFS_DIRECTORY);
-  }
-  if (!vfs_resolve_path(
-          "/C/Program Files/Google/Chrome/Application/chrome.exe")) {
-    vfs_create("/C/Program Files/Google/Chrome/Application/chrome.exe",
-               VFS_FILE);
-    vfs_node_t *chrome = vfs_resolve_path(
-        "/C/Program Files/Google/Chrome/Application/chrome.exe");
-    if (chrome) {
-      const char *stub = "MZ... Retro-OS Google Chrome Stub ...";
-      vfs_write(chrome, 0, (const uint8_t *)stub, strlen(stub));
-    }
-  }
-
-  // Populate Desktop for visual verification
-  if (!vfs_resolve_path("/home/user/Desktop/Welcome.txt")) {
-    vfs_create("/home/user/Desktop/Welcome.txt", VFS_FILE);
-    vfs_node_t *welcome = vfs_resolve_path("/home/user/Desktop/Welcome.txt");
-    if (welcome) {
-      const char *msg = "Welcome to Retro-OS! Your files are safe in Phase A.";
+  vfs_create("/home/user/Desktop/Welcome.txt", VFS_FILE);
+  vfs_node_t *welcome = vfs_resolve_path("/home/user/Desktop/Welcome.txt");
+  if (welcome) {
+      const char *msg = "Retro-OS Flagship Storage Layer Active.\n/dev/tty correctly linked.";
       vfs_write(welcome, 0, (const uint8_t *)msg, strlen(msg));
-    }
-  }
-  if (!vfs_resolve_path("/home/user/Desktop/Projects")) {
-    vfs_create("/home/user/Desktop/Projects", VFS_DIRECTORY);
   }
 
-  serial_log("VFS: Standard paths verified.");
-
-  vfs_dev = vfs_resolve_path("/dev"); // Cache dev root
+  phase_a_set_sync(true);
+  phase_vfs_sync();
+  vfs_dev = vfs_resolve_path("/dev");
 
 #include "../include/kernel_vfs_phase4.h"
-
-  // ... inside vfs_init ...
-  serial_log("VFS: Phase 1 Init Complete. Real paths active.");
-
-  // Initialize Security Layer (Phase 3)
-  serial_log("VFS: Calling fs_phase3_init...");
   fs_phase3_init();
-  serial_log("VFS: fs_phase3_init done.");
-
-  // Initialize High Level API (Phase 4)
-  serial_log("VFS: Calling vfs_phase4_init...");
   vfs_phase4_init();
-  serial_log("VFS: vfs_phase4_init done.");
 }
 
 // Wrapper for legacy internal calls (Kernel.cpp might call these if looking for
@@ -620,6 +670,23 @@ int vfs_unlink(const char *path) {
     return node->parent->unlink(node->parent, node->name);
   if (node->parent->fs && node->parent->fs->unlink)
     return node->parent->fs->unlink(node->parent, node->name);
+
+  return -1;
+}
+
+int vfs_rmdir(const char *path) {
+  vfs_node_t *node = vfs_resolve_path(path);
+  if (!node)
+    return -1;
+  if (node->type != VFS_DIRECTORY)
+    return -1; // Not a directory
+  if (!node->parent)
+    return -1; // Cannot rmdir root
+
+  if (node->parent->rmdir)
+    return node->parent->rmdir(node->parent, node->name);
+  if (node->parent->fs && node->parent->fs->rmdir)
+    return node->parent->fs->rmdir(node->parent, node->name);
 
   return -1;
 }
@@ -701,6 +768,26 @@ int rmdir_vfs(vfs_node_t *node, const char *name) {
   if (node->fs && node->fs->rmdir)
     return node->fs->rmdir(node, name);
   return -1;
+}
+
+int vfs_get_mount_count() { return mount_count; }
+const char *vfs_get_mount_path(int i) {
+  if (i >= 0 && i < mount_count)
+    return mounts[i].path;
+  return 0;
+}
+
+int vfs_get_disk_usage(const char *path, uint32_t *total, uint32_t *free) {
+  vfs_node_t *node = vfs_resolve_path(path);
+  if (!node)
+    return -1;
+  if (node->device) {
+    fat32_get_stats((fat32_context_t *)node->device, total, free);
+    return 0;
+  }
+  *total = 2147483648U; // 2GB
+  *free = 1073741824U;  // 1GB
+  return 0;
 }
 
 } // extern "C"

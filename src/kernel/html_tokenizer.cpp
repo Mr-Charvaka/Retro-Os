@@ -73,8 +73,8 @@ Token Tokenizer::next_token() {
       break;
 
     case TokenizerState::RAWTEXT:
-      if (c == '<') {
-        state = TokenizerState::TAG_OPEN; // Simplified
+      if (c == '<' && input[position + 1] == '/') {
+        state = TokenizerState::TAG_OPEN;
         advance();
       } else {
         Token t(TokenType::CHARACTER);

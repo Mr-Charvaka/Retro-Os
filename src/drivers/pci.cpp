@@ -80,3 +80,27 @@ bool pci_find_device(uint16_t vendor, uint16_t device, uint8_t *bus,
   }
   return false;
 }
+
+bool pci_find_by_class(uint8_t class_id, uint8_t subclass_id, uint8_t prog_if,
+                       uint8_t *bus, uint8_t *slot, uint8_t *func) {
+  for (uint16_t b = 0; b < 256; b++) {
+    for (uint8_t s = 0; s < 32; s++) {
+      for (uint8_t f = 0; f < 8; f++) {
+        uint32_t id = pci_read_config((uint8_t)b, s, f, 0);
+        if ((id & 0xFFFF) != 0xFFFF) {
+          uint32_t class_info = pci_read_config((uint8_t)b, s, f, 0x08);
+          uint8_t c = (class_info >> 24) & 0xFF;
+          uint8_t sc = (class_info >> 16) & 0xFF;
+          uint8_t pi = (class_info >> 8) & 0xFF;
+          if (c == class_id && sc == subclass_id && pi == prog_if) {
+            *bus = (uint8_t)b;
+            *slot = s;
+            *func = f;
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}

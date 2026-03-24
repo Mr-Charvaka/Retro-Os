@@ -77,6 +77,7 @@ struct Window {
   KeyFn key;
   uint32_t *backbuffer;
   int id;
+  void *app_data;
   int client_fd;
   ContextProvider context_provider;
 };
@@ -110,6 +111,8 @@ enum IconID {
   ICON_MONITOR,
   ICON_CALC,
   ICON_NOTEPAD,
+  ICON_DISK,
+  ICON_COMPUTER,
   ICON_BROWSER
 };
 void draw_icon(IconID id, int x, int y, int size, uint32_t accent = 0);

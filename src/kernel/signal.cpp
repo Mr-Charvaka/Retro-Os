@@ -12,7 +12,7 @@
 extern "C" {
 
 // Global tick counter (from timer.cpp)
-extern uint32_t tick;
+extern volatile uint32_t tick;
 
 // ============================================================================
 // Signal Set ke saath chhed-chhad karne waale functions

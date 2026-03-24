@@ -29,20 +29,9 @@ struct SyscallFrame {
    SECTION 2: AHCI SATA BLOCK DEVICE (REAL STUBS)
 ========================================================= */
 
-volatile HBA_MEM *ahci_base = nullptr;
+// AHCI logic moved to src/drivers/ahci.cpp
 
-extern "C" bool ahci_read(uint32_t lba, void *buffer) {
-  // Real DMA command would go here
-  (void)lba;
-  (void)buffer;
-  return true;
-}
 
-extern "C" bool ahci_write(uint32_t lba, const void *buffer) {
-  (void)lba;
-  (void)buffer;
-  return true;
-}
 
 /* =========================================================
    SECTION 3: FILESYSTEM INTERFACE

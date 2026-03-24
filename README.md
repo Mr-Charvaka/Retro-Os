@@ -1,5 +1,7 @@
 # 🕹️ Retro-OS
 
+![Retro-OS Banner](Demo/Banner.png)
+
 **Retro-OS** is a high-performance, higher-half 32-bit Operating System designed with a focus on modern networking, POSIX compliance, and a rich graphical user interface. Built from the ground up, it features a custom kernel, a robust network stack with HTTPS support, and a dedicated rendering engine.
 
 ---
@@ -35,10 +37,10 @@
 
 Explore the visual identity and interface of Retro-OS.
 
-| Desktop Environment | Development Progress |
-| :---: | :---: |
-| ![Screenshot 1](Demo/Screenshot_1.png) | ![Screenshot 2](Demo/Screenshot_2.png) |
-| ![Screenshot 3](Demo/Screenshot_3.png) | ![Screenshot 4](Demo/Screenshot_4.png) |
+| Desktop Environment | Development Progress | Rendering Engine |
+| :---: | :---: | :---: |
+| ![Screenshot 1](Demo/Screenshot_1.png) | ![Screenshot 2](Demo/Screenshot_2.png) | ![Dillo Example](Demo/Dillo_Example.png) |
+| ![Screenshot 3](Demo/Screenshot_3.png) | ![Screenshot 4](Demo/Screenshot_4.png) | |
 
 > [!NOTE]
 > *Above: Snapshots of the GUI system and the kernel booting into protected mode.*
@@ -63,7 +65,7 @@ This script triggers the `build.sh` within WSL to compile all components and gen
 ### Running with QEMU
 Run the following command to boot Retro-OS:
 ```powershell
-qemu-system-i386 -drive format=raw,file=os.img -m 512M -serial stdio -net nic,model=e1000 -net user
+qemu-system-i386 -drive format=raw,file=os.img -m 2G -serial stdio -net nic,model=e1000 -net user
 ```
 
 ---
@@ -85,4 +87,4 @@ Retro-OS is under active development. Current focus areas include:
 - [ ] **VFS Stability**: Enhancing FAT16 state synchronization.
 
 ---
-*Created with Love, Passion, Grit and Hobby.*
+*Created with ❤️ by the Retro-OS Team.*

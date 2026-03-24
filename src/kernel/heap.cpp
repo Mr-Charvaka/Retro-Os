@@ -127,4 +127,22 @@ void kfree(void *p) {
 
 void *malloc(uint32_t size) { return kmalloc_real(size, 0, 0); }
 
+void *realloc(void *ptr, uint32_t size) {
+    if (!ptr) return malloc(size);
+    if (size == 0) { free(ptr); return nullptr; }
+
+    uint32_t buddy_ptr = *((uint32_t *)((uintptr_t)ptr - 4));
+    header_t *header = (header_t *)buddy_ptr;
+    uint32_t old_size = header->size - sizeof(header_t) - 4;
+
+    if (size <= old_size) return ptr;
+
+    void *new_ptr = malloc(size);
+    if (new_ptr) {
+        memcpy(new_ptr, ptr, old_size);
+        free(ptr);
+    }
+    return new_ptr;
+}
+
 void free(void *p) { kfree(p); }

@@ -8,6 +8,8 @@ extern "C" {
 // ------------------- Memory Management -------------------
 void *kmalloc(size_t size) {
   void *res;
+  // Align to 16 bytes for safety with SSE/AVX
+  size = (size + 15) & ~15;
   asm volatile("int $0x80" : "=a"(res) : "a"(6), "b"(size)); // SYS_SBRK = 6
   return res;
 }

@@ -94,6 +94,9 @@ extern "C" void net_advanced_init(void) {
   serial_log("========================================");
   serial_log("NET_ADV: Network Stack Ready!");
   serial_log("========================================");
+
+  // Trigger automatic network testing (DHCP, DNS, ICMP, HTTP)
+  net_self_test();
 }
 
 /* ===================== STATUS FUNCTIONS ===================== */

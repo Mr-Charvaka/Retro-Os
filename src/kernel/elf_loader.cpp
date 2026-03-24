@@ -10,94 +10,68 @@
 // ... imports ...
 
 uint32_t load_elf(const char *filename, uint32_t *top_address) {
-  serial_log("ELF: Loading file via VFS...");
+  serial_log("ELF: Loading process...");
   serial_log(filename);
 
   vfs_node_t *node = vfs_resolve_path(filename);
-  if (node == 0) {
-    serial_log("ELF ERROR: File not found in VFS.");
+  if (!node) {
+    serial_log("ELF ERROR: Path resolution failed.");
     return 0;
   }
 
-  uint8_t *buffer = (uint8_t *)kmalloc(node->size + 512);
-  vfs_read(node, 0, buffer, node->size);
-
-  Elf32_Ehdr *ehdr = (Elf32_Ehdr *)buffer;
-
-  // Check karo ki Magic sahi hai ya nahi
-  if (memcmp(ehdr->e_ident, "\x7f\x45\x4c\x46", 4) != 0) {
-    serial_log("ELF ERROR: Invalid Magic.");
-    kfree(buffer); // Achhi aadat
+  Elf32_Ehdr ehdr;
+  if (vfs_read(node, 0, &ehdr, sizeof(Elf32_Ehdr)) < sizeof(Elf32_Ehdr)) {
+    serial_log("ELF ERROR: Header read failed.");
     return 0;
   }
 
-  serial_log("ELF: Valid Magic found.");
-  serial_log_hex("ELF: Entry Point: ", ehdr->e_entry);
-  uint32_t entry_point = ehdr->e_entry;
+  if (memcmp(ehdr.e_ident, "\x7f\x45\x4c\x46", 4) != 0) {
+    serial_log("ELF ERROR: Invalid architecture signature.");
+    return 0;
+  }
 
+  serial_log_hex("ELF: V-Entry: ", ehdr.e_entry);
   uint32_t max_addr = 0;
 
-  // Program Headers ko padho
-  Elf32_Phdr *phdr = (Elf32_Phdr *)(buffer + ehdr->e_phoff);
-  for (int i = 0; i < ehdr->e_phnum; i++) {
-    if (phdr[i].p_type == PT_LOAD) {
-      serial_log_hex("ELF: Loading segment at ", phdr[i].p_vaddr);
-      serial_log_hex("ELF: Segment size: ", phdr[i].p_memsz);
+  // Load Program Headers locally
+  Elf32_Phdr *phdrs = (Elf32_Phdr *)kmalloc(ehdr.e_phnum * sizeof(Elf32_Phdr));
+  vfs_read(node, ehdr.e_phoff, phdrs, ehdr.e_phnum * sizeof(Elf32_Phdr));
 
-      // Pages ka map hona zaroori hai!
-      // Ye user processes ke liye bahut important hai jahan shuru mein sab
-      // khali hota hai.
-      uint32_t start_addr = phdr[i].p_vaddr;
-      uint32_t end_addr = start_addr + phdr[i].p_memsz;
+  for (int i = 0; i < ehdr.e_phnum; i++) {
+    if (phdrs[i].p_type == PT_LOAD) {
+      uint32_t start_addr = phdrs[i].p_vaddr;
+      uint32_t size = phdrs[i].p_memsz;
+      uint32_t file_size = phdrs[i].p_filesz;
+      
+      if (start_addr + size > max_addr) max_addr = start_addr + size;
 
-      if (end_addr > max_addr) {
-        max_addr = end_addr;
-      }
+      uint32_t start_page = (start_addr) & 0xFFFFF000;
+      uint32_t end_page = (start_addr + size + 0xFFF) & 0xFFFFF000;
 
-      uint32_t start_page = start_addr & 0xFFFFF000;
-      uint32_t end_page = (end_addr + 0xFFF) & 0xFFFFF000;
-
-      // Map pages (Silent)
+      // Map segments to User space with correct permissions
       for (uint32_t page = start_page; page < end_page; page += 4096) {
         if (vm_get_phys(page) == 0) {
           void *phys = pmm_alloc_block();
-          if (!phys) {
-            serial_log("ELF ERROR: PMM allocation failed!");
-            kfree(buffer);
-            return 0;
-          }
-          vm_map_page((uint32_t)phys, page, 7);
+          vm_map_page((uint32_t)phys, page, 7); // User/RW (Flags 7)
+          memset((void*)page, 0, 4096); // Zero initialised
         }
       }
 
-      // Copy content
-      memcpy((void *)phdr[i].p_vaddr, buffer + phdr[i].p_offset,
-             phdr[i].p_filesz);
-
-      // Verify Entry Point Content
-      if (entry_point >= phdr[i].p_vaddr &&
-          entry_point < phdr[i].p_vaddr + phdr[i].p_memsz) {
-        uint8_t *code = (uint8_t *)entry_point;
-        serial_log("ELF: Code at Entry Point:");
-        serial_log_hex(" [0]: ", code[0]);
-        serial_log_hex(" [1]: ", code[1]);
-        serial_log_hex(" [2]: ", code[2]);
-        serial_log_hex(" [3]: ", code[3]);
+      // Read segment data directly from disk into its virtual address
+      if (file_size > 0) {
+        vfs_read(node, phdrs[i].p_offset, (void*)start_addr, file_size);
       }
 
-      // Zero BSS
-      if (phdr[i].p_memsz > phdr[i].p_filesz) {
-        memset((void *)(phdr[i].p_vaddr + phdr[i].p_filesz), 0,
-               phdr[i].p_memsz - phdr[i].p_filesz);
+      // POSIX/ELF requirement: Zero out the rest of the memory in this segment (BSS)
+      if (size > file_size) {
+        memset((void*)(start_addr + file_size), 0, size - file_size);
+        serial_log_hex("ELF: Zeroed BSS for segment, size: ", size - file_size);
       }
     }
   }
 
-  if (top_address) {
-    *top_address = (max_addr + 0xFFF) & 0xFFFFF000;
-  }
-
-  kfree(buffer);
-  serial_log_hex("ELF: Returning entry point ", entry_point);
-  return entry_point;
+  if (top_address) *top_address = (max_addr + 0xFFF) & 0xFFFFF000;
+  
+  kfree(phdrs);
+  return ehdr.e_entry;
 }

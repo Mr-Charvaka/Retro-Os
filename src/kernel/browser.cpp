@@ -4,10 +4,11 @@
 #include "../include/css_parser.h"
 #include "../include/html_parser.h"
 #include "../include/string.h"
-//#include "v8/mujs/mujs.h"
+#include "../include/netsurf.h" // NEW: Connect NetSurf Libraries
 #include "net_advanced.h"
 #include "heap.h"
 #include <setjmp.h>
+#include <stdio.h>
 
 namespace Browser {
 
@@ -53,8 +54,8 @@ struct LayoutNode {
   char link_url[256]; // For 'a' tags
 };
 
-#define MAX_NODES 2048
-static LayoutNode nodes[MAX_NODES];
+#define MAX_NODES 8192
+static LayoutNode *nodes = nullptr;
 static int node_count = 0;
 static int content_height = 0;
 
@@ -312,13 +313,15 @@ void decode_entities(char *text) {
         }
         if (*p == ';') {
           if (val > 0 && val < 256) {
-              *dst++ = (char)val;
+            *dst++ = (char)val;
           } else {
-              *dst++ = '?'; // Fallback for unsupported unicode
+            *dst++ = '?'; // Fallback for unsupported unicode
           }
           src = (char *)p + 1;
-          continue;
+        } else {
+          src++;
         }
+        continue;
       }
     }
     *dst++ = *src++;
@@ -420,21 +423,76 @@ void execute_scripts(Node *n) {
   }*/
 }
 
+/* ===================== HUBBUB DOM BUILDER ===================== */
+
+static void hubbub_create_element(void *ctx, lwc_string *tag, void **node) {
+  const char *name = lwc_string_data(tag);
+  *node = new ElementNode(name);
+}
+
+static void hubbub_append_child(void *ctx, void *parent, void *child) {
+  Node *p = (Node *)parent;
+  if (!p) p = (Node *)ctx; // Default to DocumentNode (ctx)
+  Node *c = (Node *)child;
+  if (p && c) p->append_child(c);
+}
+
+static void hubbub_insert_text(void *ctx, void *parent, const char *data, size_t len) {
+  Node *p = (Node *)parent;
+  if (!p) p = (Node *)ctx; 
+  if (!p) return;
+  if (len == 0) return;
+
+  char *buf = new char[len + 1];
+  memcpy(buf, data, len);
+  buf[len] = 0;
+  
+  // Log small snippet of text
+  char snippet[32];
+  int slen = len > 30 ? 30 : len;
+  memcpy(snippet, data, slen);
+  snippet[slen] = 0;
+  printf("BROWSER: Insert text '%.*s'...\n", slen, snippet);
+
+  TextNode *tn = new TextNode(buf);
+  p->append_child(tn);
+  delete[] buf;
+}
+
 void parse_html() {
+  if (!nodes) {
+    nodes = new LayoutNode[MAX_NODES];
+  }
   node_count = 0;
   const char *p = g_browser.content;
 
-  // Skip Headers
+  // Skip Headers if present
   const char *body_start = strstr(p, "\r\n\r\n");
-  if (body_start)
-    p = body_start + 4;
+  if (body_start) p = body_start + 4;
 
   if (g_browser.response.body && g_browser.response.body_length > 0) {
     p = (const char *)g_browser.response.body;
   }
 
-  HTML5Parser parser;
-  DocumentNode *doc = parser.parse(p);
+  serial_log("BROWSER: Parsing with Hubbub (NetSurf Libraries)...");
+  DocumentNode *doc = new DocumentNode();
+  
+  hubbub_parser *parser = nullptr;
+  hubbub_parser_create("UTF-8", true, &parser);
+  hubbub_tree_handler handler;
+  handler.create_element = hubbub_create_element;
+  handler.append_child = hubbub_append_child;
+  handler.insert_text = hubbub_insert_text;
+  hubbub_parser_set_tree_handler(parser, &handler, doc);
+
+  uint32_t content_len = strlen(p);
+  if (g_browser.response.body && g_browser.response.body_length > 0) {
+      content_len = g_browser.response.body_length;
+  }
+
+  hubbub_parser_parse_chunk(parser, (const uint8_t *)p, content_len);
+  hubbub_parser_completed(parser);
+  hubbub_parser_destroy(parser);
 
   if (doc) {
     if (g_browser.stylesheet) {
@@ -443,13 +501,6 @@ void parse_html() {
     }
     collect_styles(doc);
     flatten_tree(doc, get_default_style("body"), false);
-
-    // Initial JS context
-    /*if (g_browser.js) js_freestate(g_browser.js);
-    g_browser.js = js_newstate(nullptr, nullptr, 0);
-    js_newcfunction(g_browser.js, js_print, "print", 1);
-    js_setglobal(g_browser.js, "print");*/
-
     execute_scripts(doc);
     delete doc;
   }
@@ -538,7 +589,7 @@ void layout_content(int width) {
 void init(bool is_dillo) {
   memset(&g_browser, 0, sizeof(BrowserState));
   g_browser.is_dillo = is_dillo;
-  strcpy(g_browser.url, "http://info.cern.ch");
+  strcpy(g_browser.url, "http://www.google.com");
   strcpy(g_browser.status, "Ready");
   g_browser.content_len = 0;
   g_browser.url_cursor = strlen(g_browser.url);
@@ -564,7 +615,7 @@ static void navigate_internal(const char *url, int depth) {
   strcpy(g_browser.status, "Loading...");
 
   char safe_url[256];
-  if (strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0 || strncmp(url, "file://", 7) == 0) {
+  if (strncmp(url, "http://", 7) == 0 || strncmp(url, "file://", 7) == 0 || strncmp(url, "https://", 8) == 0) {
     strcpy(safe_url, url);
   } else {
     strcpy(safe_url, "http://");
@@ -593,46 +644,17 @@ static void navigate_internal(const char *url, int depth) {
   } else {
     ret = http_get(safe_url, (uint8_t *)g_browser.content,
                       sizeof(g_browser.content) - 1, &g_browser.response);
+
+    // Support HTTP Redirects (301, 302, etc.)
+    if (g_browser.response.status_code >= 300 && g_browser.response.status_code < 400 && g_browser.response.location[0]) {
+      serial_log("BROWSER: Redirecting to: ");
+      serial_log(g_browser.response.location);
+      navigate_internal(g_browser.response.location, depth + 1); // Use navigate_internal for recursion
+      return;
+    }
   }
 
   if (ret > 0) {
-    // Redirect Support
-    if (g_browser.response.status_code == 301 ||
-        g_browser.response.status_code == 302) {
-      const char *loc = http_get_header(&g_browser.response, "Location");
-      if (loc) {
-        serial_log("BROWSER: Redirecting to...");
-        serial_log(loc);
-        
-        char resolved_loc[256];
-        if (strncmp(loc, "http://", 7) == 0 || strncmp(loc, "https://", 8) == 0 || strncmp(loc, "file://", 7) == 0) {
-            strcpy(resolved_loc, loc);
-        } else if (loc[0] == '/') {
-            // Absolute path relative to host
-            // Extract host from safe_url
-            const char* host_end = strchr(safe_url + 8, '/');
-            if (!host_end) host_end = safe_url + strlen(safe_url);
-            int host_part_len = host_end - safe_url;
-            strncpy(resolved_loc, safe_url, host_part_len);
-            resolved_loc[host_part_len] = 0;
-            strcat(resolved_loc, loc);
-        } else {
-            // Relative to current path (simplified)
-            strcpy(resolved_loc, safe_url);
-            char* last_slash = strrchr(resolved_loc, '/');
-            if (last_slash > safe_url + 8) {
-                *(last_slash + 1) = 0;
-                strcat(resolved_loc, loc);
-            } else {
-                strcat(resolved_loc, "/");
-                strcat(resolved_loc, loc);
-            }
-        }
-        
-        navigate_internal(resolved_loc, depth + 1);
-        return;
-      }
-    }
     g_browser.content_len = ret;
     g_browser.content[ret] = 0;
     strcpy(g_browser.status, "Done");
@@ -821,15 +843,16 @@ void key(Window *w, int k, int state) {
 
   if (g_browser.url_focused) {
     int len = strlen(g_browser.url);
-    if (k == 8) {
+    if (k == 8 || k == '\b') { // Backspace
       if (len > 0) {
         g_browser.url[len - 1] = 0;
-        g_browser.url_cursor--;
+        if (g_browser.url_cursor > 0)
+          g_browser.url_cursor--;
       }
-    } else if (k == 13) {
+    } else if (k == 13 || k == '\n') { // Enter
       g_browser.url_focused = false;
       navigate(g_browser.url);
-    } else if (k >= 32 && k <= 126) {
+    } else if (k >= 32 && k <= 126) { // Printable characters
       if (len < 255) {
         g_browser.url[len] = (char)k;
         g_browser.url[len + 1] = 0;

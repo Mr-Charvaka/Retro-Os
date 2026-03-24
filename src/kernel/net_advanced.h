@@ -178,6 +178,7 @@ struct http_response {
   uint32_t body_length;
   uint32_t content_length;
   int chunked;
+  char location[256]; // NEW: For redirects (301, 302)
 };
 
 // Initialize HTTP client

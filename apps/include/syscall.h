@@ -155,6 +155,8 @@
 #define SYS_TCSETATTR 132
 #define SYS_SELECT 133
 #define SYS_POLL 134
+#define SYS_AUDIO_PLAY 135
+#define SYS_SPEAKER_PCM 136
 
 // Phase 11-12: Memory/Config
 #define SYS_MPROTECT 141
@@ -169,11 +171,14 @@
 #define SYS_FB_SWAP 153
 #define SYS_PTY_CREATE 154
 #define SYS_NET_PING 155
+#define SYS_NET_STATUS 156
+#define SYS_DNS_RESOLVE 157
 
 #define AF_UNIX 1
 #define SOCK_STREAM 1
 
 /* Open flags */
+#ifndef O_RDONLY
 #define O_RDONLY 0x00
 #define O_WRONLY 0x01
 #define O_RDWR 0x02
@@ -182,13 +187,17 @@
 #define O_APPEND 0x400
 #define O_EXCL 0x80
 #define O_NONBLOCK 0x800
+#endif
 
 /* Seek origins */
+#ifndef SEEK_SET
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
+#endif
 
 /* File type flags */
+#ifndef S_IFMT
 #define S_IFMT 0170000
 #define S_IFREG 0100000
 #define S_IFDIR 0040000
@@ -197,8 +206,10 @@
 #define S_IFIFO 0010000
 #define S_IFLNK 0120000
 #define S_IFSOCK 0140000
+#endif
 
 /* Signals */
+#ifndef SIGHUP
 #define SIGHUP 1
 #define SIGINT 2
 #define SIGQUIT 3
@@ -218,6 +229,7 @@
 #define SIGCONT 18
 #define SIGSTOP 19
 #define SIGTSTP 20
+#endif
 
 // Redundant struct stat and dirent removed as they are in types.h
 

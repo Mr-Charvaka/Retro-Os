@@ -1,7 +1,7 @@
 #ifndef VGA_H
 #define VGA_H
 
-#include "types.h"
+#include "../include/types.h"
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
@@ -31,5 +31,6 @@ void vga_clear_screen();
 void vga_print(const char *str);
 void vga_print_color(const char *str, uint8_t color);
 void vga_print_char(char c);
+void vga_set_color(uint8_t color);
 
 #endif

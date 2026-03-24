@@ -4,13 +4,13 @@
 
 static uint64_t tsc_freq = 0;
 
-uint64_t rdtsc() {
+extern "C" uint64_t rdtsc() {
   uint32_t low, high;
   asm volatile("rdtsc" : "=a"(low), "=d"(high));
   return ((uint64_t)high << 32) | low;
 }
 
-void tsc_calibrate() {
+extern "C" void tsc_calibrate() {
   serial_log("TSC: Calibrating...");
 
   // Use HPET for calibration if available
@@ -31,7 +31,7 @@ void tsc_calibrate() {
   serial_log_hex("TSC: Frequency estimate (ticks per sample): ", tsc_freq);
 }
 
-void nanosleep(uint64_t ns) {
+extern "C" void tsc_delay_ns(uint64_t ns) {
   uint64_t start = rdtsc();
   // Use a simpler condition without division to avoid __udivdi3
   uint64_t ticks = ns; // Very crude placeholder

@@ -5,7 +5,8 @@
 #include <Std/Types.h>
 
 extern "C" {
-void *kmalloc(size_t);
+void *malloc(size_t);
+void free(void*);
 }
 
 namespace Std {
@@ -56,7 +57,7 @@ private:
     if (next_capacity < new_capacity)
       next_capacity = new_capacity;
 
-    T *new_data = (T *)kmalloc(next_capacity * sizeof(T));
+    T *new_data = (T *)malloc(next_capacity * sizeof(T));
 
     for (size_t i = 0; i < m_size; i++) {
       new (&new_data[i]) T(move(m_data[i]));

@@ -9,8 +9,8 @@ size_t strlen(const char *);
 char *strcpy(char *, const char *);
 char *strcat(char *, const char *);
 int strcmp(const char *, const char *);
-void *kmalloc(size_t);
-void kfree(void *);
+void *malloc(size_t);
+void free(void *);
 }
 
 namespace Std {
@@ -26,14 +26,14 @@ public:
       return;
     }
     m_length = strlen(cstr);
-    m_data = (char *)kmalloc(m_length + 1);
+    m_data = (char *)malloc(m_length + 1);
     strcpy(m_data, cstr);
   }
 
   String(const String &other) {
     if (other.m_data) {
       m_length = other.m_length;
-      m_data = (char *)kmalloc(m_length + 1);
+      m_data = (char *)malloc(m_length + 1);
       strcpy(m_data, other.m_data);
     } else {
       m_data = nullptr;
@@ -60,7 +60,7 @@ public:
     // if (m_data) kfree(m_data);
     if (other.m_data) {
       m_length = other.m_length;
-      m_data = (char *)kmalloc(m_length + 1);
+      m_data = (char *)malloc(m_length + 1);
       strcpy(m_data, other.m_data);
     } else {
       m_data = nullptr;
@@ -73,7 +73,7 @@ public:
     if (!other)
       return *this;
     size_t other_len = strlen(other);
-    char *new_data = (char *)kmalloc(m_length + other_len + 1);
+    char *new_data = (char *)malloc(m_length + other_len + 1);
     if (m_data)
       strcpy(new_data, m_data);
     else
@@ -91,7 +91,7 @@ public:
     if (!other)
       return *this;
     size_t other_len = strlen(other);
-    char *new_data = (char *)kmalloc(m_length + other_len + 1);
+    char *new_data = (char *)malloc(m_length + other_len + 1);
     if (m_data)
       strcpy(new_data, m_data);
     else
@@ -142,7 +142,7 @@ public:
       return String("");
     if (len == (size_t)-1 || pos + len > m_length)
       len = m_length - pos;
-    char *buf = (char *)kmalloc(len + 1);
+    char *buf = (char *)malloc(len + 1);
     for (size_t i = 0; i < len; i++)
       buf[i] = m_data[pos + i];
     buf[len] = 0;

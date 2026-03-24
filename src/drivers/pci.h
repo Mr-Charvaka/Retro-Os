@@ -14,5 +14,7 @@ void pci_check_buses();
 uint32_t pci_get_bga_bar0(); // Special helper for our goal
 bool pci_find_device(uint16_t vendor, uint16_t device, uint8_t *bus,
                      uint8_t *slot, uint8_t *func);
+bool pci_find_by_class(uint8_t class_id, uint8_t subclass_id, uint8_t prog_if,
+                       uint8_t *bus, uint8_t *slot, uint8_t *func);
 
 #endif

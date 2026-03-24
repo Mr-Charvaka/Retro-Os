@@ -4,6 +4,7 @@
 
 #include "../drivers/serial.h"
 #include "../include/string.h"
+#include "../include/types.h"
 #include <stdint.h>
 
 #define MAX_ITEMS 128
@@ -21,6 +22,8 @@ int sys_readdir(int fd, int index, void *out);
 int sys_mkdir(const char *path, int perms);
 int sys_stat(const char *path, void *stat_out);
 int sys_spawn(const char *path, char **argv);
+int vfs_get_mount_count();
+const char *vfs_get_mount_path(int i);
 }
 
 // =======================================================
@@ -33,9 +36,27 @@ struct ExplorerItem {
   uint32_t type;
 };
 
-ExplorerItem items[MAX_ITEMS];
-int item_count = 0;
-char cwd[MAX_PATH] = "/home/user/Desktop";
+struct ExplorerState {
+  ExplorerItem items[MAX_ITEMS];
+  int item_count;
+  char cwd[MAX_PATH];
+  int selected;
+  int hovered;
+  int scroll_y;
+  bool active;
+  
+  // Flagship Disk Stats
+  struct DriveInfo {
+    char label[32];
+    char path[32];
+    uint32_t total;
+    uint32_t free;
+  } drives[8];
+  int drive_count;
+  bool show_disk_usage;
+};
+
+extern "C" int vfs_get_disk_usage(const char *path, uint32_t *total, uint32_t *free);
 
 // =======================================================
 // PATH UTILITIES
@@ -60,135 +81,78 @@ static void build_child_path(char *out, const char *parent, const char *name) {
 // DIRECTORY LOADING (TRUTH SOURCE)
 // =======================================================
 
-extern "C" void explorer_load_directory(const char *path) {
-  serial_log("Explorer: Loading directory...");
-  serial_log(path);
+extern "C" void explorer_load_directory_ex(ExplorerState *state, const char *path) {
+  if (!state) return;
+  state->item_count = 0;
+  strcpy(state->cwd, path);
+  state->show_disk_usage = false;
 
-  item_count = 0;
-  strcpy(cwd, path);
+  if (strcmp(path, "computer:") == 0) {
+      state->show_disk_usage = true;
+      state->drive_count = 0;
+      state->item_count = 0; // Clear items for This PC view
+      
+      int n = vfs_get_mount_count();
+      for (int i=0; i<n && state->drive_count < 8; i++) {
+          const char* mp = vfs_get_mount_path(i);
+          if (mp) {
+              auto &d = state->drives[state->drive_count++];
+              strcpy(d.path, mp);
+              if (strcmp(mp, "/") == 0) strcpy(d.label, "System (Root)");
+              else if (strcmp(mp, "/C") == 0) strcpy(d.label, "Local Disk (C:)");
+              else {
+                  strcpy(d.label, "Drive ");
+                  strcat(d.label, mp+1);
+              }
+              vfs_get_disk_usage(mp, &d.total, &d.free);
 
-  int fd = sys_open(path, 0);
-  if (fd < 0) { // sys_open returns negative on failure, 0 is a valid FD
-    serial_log("Explorer ERROR: cannot open directory");
-    return;
+              // Also add to items so they are clickable icons
+              auto &item = state->items[state->item_count++];
+              strcpy(item.name, d.label);
+              item.type = 2; // TYPE_DIR
+              strcpy(item.full_path, d.path);
+              // We'll use a special check in explorer_open_item_ex to handle this
+          }
+      }
+      return; 
   }
 
+  if (strcmp(path, "/C") == 0 || strcmp(path, "/") == 0) {
+      // Don't show disk usage bars here anymore, only in computer:
+      state->show_disk_usage = false;
+  }
+
+  int fd = sys_open(path, 0);
+  if (fd < 0) return;
+
   for (int i = 0; i < MAX_ITEMS; i++) {
-    struct {
-      char name[64];
-      uint32_t type;
-    } ent;
+    struct dirent ent;
 
     if (sys_readdir(fd, i, &ent) != 0)
       break;
 
-    if (!ent.name[0] || strcmp(ent.name, ".") == 0 ||
-        strcmp(ent.name, "..") == 0)
+    if (!ent.d_name[0] || strcmp(ent.d_name, ".") == 0 ||
+        strcmp(ent.d_name, "..") == 0)
       continue;
 
-    ExplorerItem &it = items[item_count++];
-    strcpy(it.name, ent.name);
-    it.type = ent.type;
-    build_child_path(it.full_path, path, ent.name);
+    ExplorerItem &it = state->items[state->item_count++];
+    strcpy(it.name, ent.d_name);
+    // DT_DIR is 4 in dirent.h. TYPE_DIR in contract is 2.
+    it.type = (ent.d_type == 4) ? 2 : 1; 
+    build_child_path(it.full_path, path, ent.d_name);
   }
 
   sys_close(fd);
 }
 
-// =======================================================
-// OPEN CONTRACT (DOUBLE CLICK + RIGHT CLICK)
-// =======================================================
-
-extern "C" void explorer_open_item(int index) {
-  if (index < 0 || index >= item_count)
-    return;
-
-  ExplorerItem &it = items[index];
-  serial_log("Explorer OPEN: ");
-  serial_log(it.full_path);
-
-  if (it.type == TYPE_DIR) {
-    explorer_load_directory(it.full_path);
-  } else {
-    // Check extension
-    int len = strlen(it.full_path);
-    if (len > 4 && (strcmp(it.full_path + len - 4, ".txt") == 0 ||
-                    strcmp(it.full_path + len - 4, ".TXT") == 0)) {
-      char *argv[] = {(char *)"TEXTVIEW.ELF", it.full_path, nullptr};
-      serial_log("Explorer: Launching TextView for ");
-      serial_log(it.full_path);
-      sys_spawn("TEXTVIEW.ELF", argv);
-      return;
-    }
-
-    // Generic file open (Simple serial log for now)
-    int fd = sys_open(it.full_path, 0);
-    if (fd < 0) {
-      serial_log("Explorer: file open failed");
-      return;
-    }
-    serial_log("Explorer: generic file read OK");
-    sys_close(fd);
-  }
+extern "C" void explorer_load_directory(const char *path) {
+    // Deprecated global version, do nothing or use a fallback
 }
-
-// =======================================================
-// DESKTOP FOLDER CREATION (REAL FS)
-// =======================================================
-
-extern "C" void explorer_create_folder(const char *name) {
-  char path[MAX_PATH];
-  build_child_path(path, cwd, name);
-
-  serial_log("Explorer MKDIR: ");
-  serial_log(path);
-
-  int r = sys_mkdir(path, 0755);
-  if (r < 0) {
-    serial_log("MKDIR FAILED");
-    return;
-  }
-
-  explorer_load_directory(cwd);
-}
-
-// =======================================================
-// RIGHT CLICK DISPATCHER
-// =======================================================
-
-enum ContextActionType { CTX_OPEN, CTX_DELETE, CTX_PROPERTIES };
-
-extern "C" void explorer_context_action(int index, int act) {
-  if (index < 0 || index >= item_count)
-    return;
-
-  switch (act) {
-  case CTX_OPEN:
-    explorer_open_item(index);
-    break;
-
-  case CTX_DELETE:
-    serial_log("DELETE not implemented yet");
-    break;
-
-  case CTX_PROPERTIES:
-    serial_log("PATH: ");
-    serial_log(items[index].full_path);
-    break;
-  }
-}
-
-// =======================================================
-// DOUBLE CLICK DETECTION (GUI CALLS THIS)
-// =======================================================
-
-extern "C" void explorer_double_click(int index) { explorer_open_item(index); }
-
-// =======================================================
-// INITIALIZATION
-// =======================================================
 
 extern "C" void explorer_init() {
-  serial_log("Explorer Init");
-  explorer_load_directory("/home/user/Desktop");
+    // Deprecated global version
+}
+
+extern "C" void explorer_open_item(int index) {
+    // Deprecated global version
 }

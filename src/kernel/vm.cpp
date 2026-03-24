@@ -17,7 +17,7 @@ uint32_t *pd_create() {
     }
   }
 
-  return (uint32_t *)phys_pd; // CR3 ke liye physical address wapas karo
+  return (uint32_t *)phys_pd; // Return physical address for CR3
 }
 
 uint32_t *pd_clone(uint32_t *source_pd_phys) {
@@ -88,6 +88,9 @@ void vm_map_page(uint32_t phys, uint32_t virt, uint32_t flags) {
     uint32_t *virt_pt = (uint32_t *)PHYS_TO_VIRT(phys_pt);
     memset(virt_pt, 0, 4096);
     pd[pd_index] = phys_pt | 7;
+  } else if (flags & 4) {
+    // If PDE exists but we are mapping a USER page, the PDE must also allow USER access.
+    pd[pd_index] |= 4;
   }
 
   uint32_t *pt = (uint32_t *)PHYS_TO_VIRT(pd[pd_index] & 0xFFFFF000);

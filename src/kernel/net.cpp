@@ -9,7 +9,7 @@
 
 // Our network identity
 // Our network identity
-static u8 my_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+extern "C" u8 my_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
 extern "C" uint32_t net_get_local_ip(void);
 
 /* ================= IP REASSEMBLY ================= */
@@ -30,33 +30,40 @@ static ReassemblySlot reassembly_table[MAX_REASSEMBLY_SLOTS];
 extern "C" uint32_t timer_now_ms(void);
 extern "C" void* kmalloc(uint32_t);
 extern "C" void kfree(void*);
+extern "C" void dns_poll_callbacks(void); // Fix #4: drive async DNS from net tick
 
 // Gateway info - CRITICAL for routing
-static u8 gateway_mac[6] = {0xFF, 0xFF, 0xFF,
-                            0xFF, 0xFF, 0xFF}; // Initially broadcast
+static u8 gateway_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // Initially broadcast
 u32 gateway_ip = 0x0202000A;                   // 10.0.2.2
-volatile int gateway_mac_known = 0;
+volatile int gateway_mac_known = 0;            // Start unknown to trigger ARP
 
 // Byte order helpers
-static inline u16 htons(u16 x) { return (x << 8) | (x >> 8); }
-static inline u32 htonl(u32 x) {
-  return ((x & 0xFF) << 24) | ((x & 0xFF00) << 8) | ((x & 0xFF0000) >> 8) |
-         ((x & 0xFF000000) >> 24);
+// Helpers now in net.h
+
+extern "C" uint32_t net_checksum_acc(void *data, int len, uint32_t sum) {
+  uint16_t *ptr = (uint16_t *)data;
+  int left = len;
+  while (left > 1) {
+    sum += *ptr++;
+    left -= 2;
+  }
+  if (left) {
+    sum += *(uint8_t *)ptr;
+  }
+  return sum;
+}
+
+extern "C" uint16_t net_checksum_finalize(uint32_t sum) {
+  while (sum >> 16) {
+    sum = (sum & 0xFFFF) + (sum >> 16);
+  }
+  return ~sum;
 }
 
 static u16 checksum(void *data, int len) {
-  u32 sum = 0;
-  u16 *ptr = (u16 *)data;
-  while (len > 1) {
-    sum += *ptr++;
-    len -= 2;
-  }
-  if (len)
-    sum += *(u8 *)ptr;
-  while (sum >> 16)
-    sum = (sum & 0xFFFF) + (sum >> 16);
-  return ~sum;
+  return net_checksum_finalize(net_checksum_acc(data, len, 0));
 }
+
 
 // ============== ARP Layer ==============
 
@@ -194,22 +201,21 @@ extern "C" void ip_send(uint32_t dst_ip, uint8_t protocol, uint8_t *data,
   eth_hdr *eth = (eth_hdr *)buf;
   ip_hdr *ip = (ip_hdr *)(buf + sizeof(eth_hdr));
 
-  // CRITICAL: Use gateway MAC for ALL outgoing packets
-  // QEMU SLIRP requires proper MAC addressing
-  if (gateway_mac_known) {
+  if (dst_ip == 0xFFFFFFFF) {
+    // Broadcast MAC for DHCP
+    for (int i = 0; i < 6; i++) eth->dst[i] = 0xFF;
+  } else if (gateway_mac_known) {
     for (int i = 0; i < 6; i++) {
-      eth->dst[i] = gateway_mac[i];
-      eth->src[i] = my_mac[i];
+        eth->dst[i] = gateway_mac[i];
     }
-    serial_log("NET: Using gateway MAC for routing");
   } else {
-    // Fallback: use broadcast (may not work for all packets in SLIRP)
-    for (int i = 0; i < 6; i++) {
-      eth->dst[i] = 0xFF;
-      eth->src[i] = my_mac[i];
-    }
-    serial_log("NET: WARNING - Gateway MAC unknown, using broadcast");
+    // Default fallback to SLIRP router MAC if ARP hasn't succeeded yet
+    // QEMU SLIRP Gateway (10.0.2.2) MAC is standard: 52:54:00:12:35:02
+    eth->dst[0] = 0x52; eth->dst[1] = 0x54; eth->dst[2] = 0x00;
+    eth->dst[3] = 0x12; eth->dst[4] = 0x35; eth->dst[5] = 0x02;
+    serial_log("NET: Fallback to QEMU Gateway MAC (Fixed)");
   }
+  for (int i = 0; i < 6; i++) eth->src[i] = my_mac[i];
 
   eth->type = htons(ETH_TYPE_IP);
 
@@ -379,7 +385,19 @@ extern "C" void net_rx_handler(u8 *packet, u16 len) {
   eth_hdr *eth = (eth_hdr *)packet;
   u16 type = htons(eth->type);
 
-  serial_log_hex("NET: Incoming Packet, len: ", len);
+  // Auto-learn gateway MAC from any incoming IP packet
+  if (type == ETH_TYPE_IP) {
+    ip_hdr *ip = (ip_hdr *)(packet + sizeof(eth_hdr));
+    if (!gateway_mac_known || ip->src == gateway_ip) {
+        for (int i = 0; i < 6; i++) {
+            gateway_mac[i] = eth->src[i];
+        }
+        gateway_mac_known = 1;
+         serial_log("NET: Learned/Updated gateway MAC from incoming IP");
+    }
+  }
+
+  // serial_log_hex("NET: Incoming Packet, len: ", len);
 
   if (type == ETH_TYPE_ARP) {
     handle_arp(packet);
@@ -390,7 +408,15 @@ extern "C" void net_rx_handler(u8 *packet, u16 len) {
 
 // ============== Polling ==============
 
+static volatile int in_net_poll = 0;
+static u8 net_rx_buffer[2048]; // Move out of stack to prevent overflow
+
 extern "C" void net_poll(void) {
+  if (__sync_lock_test_and_set(&in_net_poll, 1)) return;
+
+  // ── Async DNS: drive pending callbacks (Fix #4) ──────────────────────────
+  dns_poll_callbacks();
+
   // Check for timed out reassembly slots
   static u32 last_cleanup = 0;
   u32 now = timer_now_ms();
@@ -405,14 +431,15 @@ extern "C" void net_poll(void) {
       last_cleanup = now;
   }
 
-  u8 buf[2048];
   int processed = 0;
   while (processed < 32) { // Process up to 32 packets in a burst
-      int len = e1000_receive(buf);
+      int len = e1000_receive(net_rx_buffer);
       if (len <= 0) break;
-      net_rx_handler(buf, len);
+      net_rx_handler(net_rx_buffer, len);
       processed++;
   }
+
+  __sync_lock_release(&in_net_poll);
 }
 
 // ============== Initialization ==============

@@ -15,6 +15,14 @@
 
 extern "C" uint32_t net_get_local_ip(void); // Get assigned IP
 
+static inline u16 htons(u16 x) { return (x << 8) | (x >> 8); }
+static inline u32 htonl(u32 x) {
+  return ((x & 0xFF) << 24) | ((x & 0xFF00) << 8) | ((x & 0xFF0000) >> 8) |
+         ((x & 0xFF000000) >> 24);
+}
+static inline u16 ntohs(u16 x) { return htons(x); }
+static inline u32 ntohl(u32 x) { return htonl(x); }
+
 struct eth_hdr {
   u8 dst[6];
   u8 src[6];

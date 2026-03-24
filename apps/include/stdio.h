@@ -6,6 +6,12 @@
 #define _STDIO_H
 
 #include "libc.h"
+
+// If we are using Newlib headers, delegate to it
+#ifdef _LIBC_SKIP_STANDARD_FUNCS
+#include <stdio.h>
+#else
+
 #include "syscall.h"
 #include "userlib.h"
 #include <stdarg.h>
@@ -283,4 +289,6 @@ static inline int fscanf(FILE *f, const char *fmt, ...) {
   return 0;
 }
 
-#endif /* _STDIO_H */
+#endif // _LIBC_SKIP_STANDARD_FUNCS
+
+#endif // _STDIO_H

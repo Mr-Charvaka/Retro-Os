@@ -4,8 +4,9 @@
 
 #include "../drivers/serial.h"
 #include "../include/errno.h"
+#include "../include/string.h"
+#include "../include/vfs.h"
 #include "process.h"
-#include "vfs.h"
 
 extern "C" {
 
@@ -32,87 +33,48 @@ int pwrite(int fd, const void *buf, size_t count, int offset) {
 }
 
 int lseek(int fd, int offset, int whence) {
-  (void)fd;
-  (void)offset;
-  (void)whence;
-  serial_log("lseek: stub called");
-  return -ENOSYS;
-}
+  if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
+    return -EBADF;
 
-int truncate(const char *path, int length) {
-  (void)path;
-  (void)length;
-  serial_log("truncate: stub called");
-  return -ENOSYS;
-}
+  file_description_t *desc = current_process->fd_table[fd];
+  if (whence == 0)      desc->offset = offset;
+  else if (whence == 1) desc->offset += offset;
+  else if (whence == 2) desc->offset = desc->node->size + offset;
+  else return -EINVAL;
 
-int ftruncate(int fd, int length) {
-  (void)fd;
-  (void)length;
-  serial_log("ftruncate: stub called");
-  return -ENOSYS;
-}
-
-int link(const char *oldpath, const char *newpath) {
-  (void)oldpath;
-  (void)newpath;
-  serial_log("link: stub called");
-  return -ENOSYS;
-}
-
-int symlink(const char *target, const char *linkpath) {
-  (void)target;
-  (void)linkpath;
-  serial_log("symlink: stub called");
-  return -ENOSYS;
-}
-
-int readlink(const char *pathname, char *buf, size_t bufsiz) {
-  (void)pathname;
-  (void)buf;
-  (void)bufsiz;
-  serial_log("readlink: stub called");
-  return -ENOSYS;
-}
-
-int lstat(const char *pathname, void *statbuf) {
-  (void)pathname;
-  (void)statbuf;
-  serial_log("lstat: stub called");
-  return -ENOSYS;
-}
-
-int mkdirat(int dirfd, const char *pathname, int mode) {
-  (void)dirfd;
-  (void)pathname;
-  (void)mode;
-  serial_log("mkdirat: stub called");
-  return -ENOSYS;
-}
-
-int unlinkat(int dirfd, const char *pathname, int flags) {
-  (void)dirfd;
-  (void)pathname;
-  (void)flags;
-  serial_log("unlinkat: stub called");
-  return -ENOSYS;
-}
-
-int renameat(int olddirfd, const char *oldpath, int newdirfd,
-             const char *newpath) {
-  (void)olddirfd;
-  (void)oldpath;
-  (void)newdirfd;
-  (void)newpath;
-  serial_log("renameat: stub called");
-  return -ENOSYS;
+  return (int)desc->offset;
 }
 
 int rename(const char *oldpath, const char *newpath) {
-  (void)oldpath;
-  (void)newpath;
-  serial_log("rename: stub called");
-  return -ENOSYS;
+  return vfs_rename(oldpath, newpath);
+}
+
+int getdents(int fd, void *dirp, unsigned int count) {
+  if (fd < 0 || fd >= MAX_PROCESS_FILES || !current_process->fd_table[fd])
+    return -EBADF;
+
+  file_description_t *desc = current_process->fd_table[fd];
+  if (!desc->node || desc->node->type != VFS_DIRECTORY)
+    return -ENOTDIR;
+
+  struct dirent *user_de = (struct dirent *)dirp;
+  int read_count = 0;
+  int bytes_written = 0;
+
+  // Since Retro-OS dirent is fixed size, we just copy them one by one
+  while (bytes_written + (int)sizeof(struct dirent) <= (int)count) {
+    struct dirent *kernel_de = vfs_readdir(desc->node, (uint32_t)desc->offset);
+    if (!kernel_de) break;
+
+    memcpy(&user_de[read_count], kernel_de, sizeof(struct dirent));
+    user_de[read_count].d_reclen = sizeof(struct dirent);
+    
+    desc->offset++;
+    read_count++;
+    bytes_written += sizeof(struct dirent);
+  }
+
+  return bytes_written;
 }
 
 int fchmod(int fd, int mode) {
@@ -153,14 +115,6 @@ int fcntl(int fd, int cmd, int arg) {
 int fchdir(int fd) {
   (void)fd;
   serial_log("fchdir: stub called");
-  return -ENOSYS;
-}
-
-int getdents(int fd, void *dirp, unsigned int count) {
-  (void)fd;
-  (void)dirp;
-  (void)count;
-  serial_log("getdents: stub called");
   return -ENOSYS;
 }
 

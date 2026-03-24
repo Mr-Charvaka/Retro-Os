@@ -94,16 +94,16 @@ typedef struct process {
 #define PLEDGE_INET 0x40 // Network
 #define PLEDGE_ALL 0xFFFFFFFF
 
-extern process_t *current_process;
-extern process_t *ready_queue;
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+extern process_t *current_process;
+extern process_t *ready_queue;
+
 void init_multitasking();
 void create_kernel_thread(void (*fn)());
-void create_user_process(const char *filename, char *const argv[]);
+int create_user_process(const char *filename, char *const argv[]);
 void schedule();
 int get_pid();
 void enter_user_mode();

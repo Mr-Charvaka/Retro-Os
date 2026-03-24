@@ -21,54 +21,8 @@ struct DirEntry {
   uint8_t type; // file or dir
 };
 
-// Simplified printf for file_utils
-extern "C" void printf(const char *fmt, ...) {
-  va_list args;
-  va_start(args, fmt);
-
-  char buf[1024];
-  char *p = buf;
-
-  while (*fmt) {
-    if (*fmt == '%' && *(fmt + 1)) {
-      fmt++;
-      if (*fmt == 's') {
-        const char *s = va_arg(args, const char *);
-        while (*s)
-          *p++ = *s++;
-      } else if (*fmt == 'u' || *fmt == 'd') {
-        unsigned int u = va_arg(args, unsigned int);
-        char tmp[16];
-        utoa(u, tmp, 10);
-        char *t = tmp;
-        while (*t)
-          *p++ = *t++;
-      } else if (*fmt == 'o') {
-        unsigned int u = va_arg(args, unsigned int);
-        char tmp[16];
-        utoa(u, tmp, 8);
-        char *t = tmp;
-        while (*t)
-          *p++ = *t++;
-      } else if (*fmt == 'x') {
-        unsigned int u = va_arg(args, unsigned int);
-        char tmp[16];
-        utoa(u, tmp, 16);
-        char *t = tmp;
-        while (*t)
-          *p++ = *t++;
-      } else {
-        *p++ = *fmt;
-      }
-    } else {
-      *p++ = *fmt;
-    }
-    fmt++;
-  }
-  *p = 0;
-  syscall_print(buf);
-  va_end(args);
-}
+// Using professional printf from new_stubs.cpp
+extern "C" void printf(const char *fmt, ...);
 
 // Wrapper translation to Kernel Syscalls
 extern "C" {

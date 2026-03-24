@@ -14,7 +14,7 @@
 extern "C" {
 
 // Global tick counter (100Hz maan ke chal rahe hain)
-extern uint32_t tick;
+extern volatile uint32_t tick;
 #define TICKS_PER_SEC 100
 
 // Boot time (init ke waqt set hota hai)

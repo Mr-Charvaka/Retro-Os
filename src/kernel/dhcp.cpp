@@ -94,15 +94,16 @@ extern "C" void udp_bind(uint16_t port, void (*handler)(uint32_t, uint16_t,
                                                         uint8_t *, uint16_t));
 extern "C" void schedule(void);
 extern "C" void net_poll(void);
+extern "C" uint64_t rdtsc(void);
 
-// MAC address (should match e1000 driver)
-static uint8_t local_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+// MAC address (learned from e1000 driver)
+extern "C" uint8_t my_mac[6];
 
 /* ===================== OPTION PARSING ===================== */
 
 static uint8_t *dhcp_find_option(uint8_t *options, int len, uint8_t opt_code) {
   int i = 0;
-  while (i < len) {
+  while (i < len - 1) { // Need at least code + len byte or PAD/END
     if (options[i] == DHCP_OPT_PAD) {
       i++;
       continue;
@@ -110,10 +111,17 @@ static uint8_t *dhcp_find_option(uint8_t *options, int len, uint8_t opt_code) {
     if (options[i] == DHCP_OPT_END) {
       break;
     }
+    
+    // Safety check for option length
+    uint8_t opt_len = options[i + 1];
+    if (i + 2 + opt_len > len) {
+        break; // Out of bounds
+    }
+
     if (options[i] == opt_code) {
       return &options[i];
     }
-    i += 2 + options[i + 1]; // Skip option
+    i += 2 + opt_len; // Skip option
   }
   return nullptr;
 }
@@ -143,7 +151,7 @@ static void dhcp_send_discover() {
   pkt.yiaddr = 0;
   pkt.siaddr = 0;
   pkt.giaddr = 0;
-  memcpy(pkt.chaddr, local_mac, 6);
+  memcpy(pkt.chaddr, my_mac, 6);
   pkt.magic = dhcp_htonl(DHCP_MAGIC_COOKIE);
 
   // Build options
@@ -178,7 +186,7 @@ static void dhcp_send_request(uint32_t offered_ip, uint32_t server_ip) {
   pkt.hlen = 6;
   pkt.xid = dhcp_htonl(dhcp_xid);
   pkt.flags = dhcp_htons(0x8000);
-  memcpy(pkt.chaddr, local_mac, 6);
+  memcpy(pkt.chaddr, my_mac, 6);
   pkt.magic = dhcp_htonl(DHCP_MAGIC_COOKIE);
 
   int opt_pos = 0;
@@ -315,8 +323,12 @@ static void dhcp_rx_handler(uint32_t src_ip, uint16_t src_port, uint8_t *data,
 
 extern "C" int dhcp_configure() {
   dhcp_state = 0;
-  dhcp_xid = timer_now_ms() ^ 0xDEADBEEF;
+  // Use TSC + timer for much better XID entropy
+  dhcp_xid = (uint32_t)rdtsc() ^ timer_now_ms() ^ 0x60061E;
   memset(&net_config, 0, sizeof(net_config));
+
+  serial_log("DHCP: Starting configuration sequence...");
+  serial_log_hex("DHCP: Transaction ID = ", dhcp_xid);
 
   dhcp_send_discover();
 
@@ -356,7 +368,7 @@ extern "C" void dhcp_release() {
   pkt.hlen = 6;
   pkt.xid = dhcp_htonl(dhcp_xid);
   pkt.ciaddr = net_config.ip_addr;
-  memcpy(pkt.chaddr, local_mac, 6);
+  memcpy(pkt.chaddr, my_mac, 6);
   pkt.magic = dhcp_htonl(DHCP_MAGIC_COOKIE);
 
   int opt_pos = 0;

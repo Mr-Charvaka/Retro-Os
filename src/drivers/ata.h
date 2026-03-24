@@ -23,8 +23,9 @@
 #define ATA_CMD_READ_PIO 0x20
 #define ATA_CMD_WRITE_PIO 0x30
 
-// Functions
 void ata_read_sector(uint32_t lba, uint8_t *buffer);
 void ata_write_sector(uint32_t lba, uint8_t *buffer);
+bool ata_read_sector_ext(uint8_t drive, uint32_t lba, uint8_t *buffer);
+bool ata_write_sector_ext(uint8_t drive, uint32_t lba, uint8_t *buffer);
 
 #endif

@@ -1,6 +1,9 @@
 #include "include/libc.h"
 #include "include/stdio.h"
 
+extern "C" void _exit(int);
+extern "C" int wait(int *);
+
 // Shell specific helpers
 void shell_print(const char *s) { fputs(s, stdout); }
 
@@ -12,7 +15,7 @@ void print_prompt() {
   shell_print("$ ");
 }
 
-int main() {
+extern "C" void _start() {
   char cmd[256];
   shell_print("\n\x1b[1;36mRetro-OS Shell v1.1.0\x1b[0m\n");
   shell_print("Type 'help' for commands.\n\n");
@@ -111,5 +114,5 @@ int main() {
     }
   }
 
-  return 0;
+  _exit(0);
 }

@@ -1,10 +1,17 @@
-/*
- * libc.h - Complete C Standard Library for Retro-OS
- * All functions implemented from scratch - no external dependencies
- */
 #ifndef _LIBC_H
 #define _LIBC_H
 
+#ifdef _LIBC_SKIP_STANDARD_FUNCS
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include "syscall.h"
+
+#else
 #include "syscall.h"
 #include "userlib.h"
 
@@ -37,6 +44,13 @@ int mkdir(const char *path, mode_t mode);
 
 void *malloc(size_t size);
 void free(void *ptr);
+static inline void *calloc(size_t nmemb, size_t size) {
+  size_t total = nmemb * size;
+  void *p = malloc(total);
+  if (p)
+    memset(p, 0, total);
+  return p;
+}
 
 #ifdef __cplusplus
 }
@@ -45,10 +59,14 @@ void free(void *ptr);
 /* ============== STDLIB.H FUNCTIONS ============== */
 
 /* Absolute value */
-static inline int abs(int n) { return n < 0 ? -n : n; }
+#ifndef abs
+#define abs(n) ((n) < 0 ? -(n) : (n))
+#endif
 static inline long labs(long n) { return n < 0 ? -n : n; }
 
 /* Division result */
+#ifndef _DIV_T_DEFINED
+#define _DIV_T_DEFINED
 typedef struct {
   int quot;
   int rem;
@@ -57,6 +75,7 @@ typedef struct {
   long quot;
   long rem;
 } ldiv_t;
+#endif
 
 static inline div_t div(int numer, int denom) {
   div_t result;
@@ -214,25 +233,27 @@ static inline int strncasecmp(const char *s1, const char *s2, uint32_t n) {
   return tolower(*(unsigned char *)s1) - tolower(*(unsigned char *)s2);
 }
 
+#ifndef _LIBC_SKIP_STANDARD_FUNCS
 static inline char *strdup(const char *s) {
-  uint32_t len = strlen(s) + 1;
-  char *copy = (char *)malloc(len);
-  if (copy)
-    memcpy(copy, s, len);
-  return copy;
+  size_t len = strlen(s);
+  char *new_s = (char *)malloc(len + 1);
+  if (new_s)
+    memcpy(new_s, s, len + 1);
+  return new_s;
 }
 
 static inline char *strndup(const char *s, uint32_t n) {
-  uint32_t len = strlen(s);
+  size_t len = strlen(s);
   if (len > n)
     len = n;
-  char *copy = (char *)malloc(len + 1);
-  if (copy) {
-    memcpy(copy, s, len);
-    copy[len] = 0;
+  char *new_s = (char *)malloc(len + 1);
+  if (new_s) {
+    memcpy(new_s, s, len);
+    new_s[len] = '\0';
   }
-  return copy;
+  return new_s;
 }
+#endif
 
 static inline uint32_t strspn(const char *s, const char *accept) {
   uint32_t count = 0;
@@ -261,30 +282,41 @@ static inline char *strpbrk(const char *s, const char *accept) {
   return 0;
 }
 
+#ifndef _LIBC_SKIP_STANDARD_FUNCS
 static inline char *strtok_r(char *str, const char *delim, char **saveptr) {
-  char *start;
-  if (str)
+  char *token;
+  if (str == NULL)
+    str = *saveptr;
+  str += strspn(str, delim);
+  if (*str == '\0') {
     *saveptr = str;
-  if (!*saveptr)
-    return 0;
-  start = *saveptr + strspn(*saveptr, delim);
-  if (!*start) {
-    *saveptr = 0;
-    return 0;
+    return NULL;
   }
-  *saveptr = start + strcspn(start, delim);
-  if (**saveptr) {
-    **saveptr = 0;
-    (*saveptr)++;
-  } else
-    *saveptr = 0;
-  return start;
+  token = str;
+  str = strpbrk(token, delim);
+  if (str == NULL) {
+    *saveptr = strchr(token, '\0');
+  } else {
+    *str = '\0';
+    *saveptr = str + 1;
+  }
+  return token;
 }
 
-static char *strtok_save;
 static inline char *strtok(char *str, const char *delim) {
-  return strtok_r(str, delim, &strtok_save);
+  static char *saveptr;
+  return strtok_r(str, delim, &saveptr);
 }
+
+static inline void *memrchr(const void *s, int c, uint32_t n) {
+  const unsigned char *cp = (const unsigned char *)s;
+  for (cp += n; n > 0; n--) {
+    if (*--cp == (unsigned char)c)
+      return (void *)cp;
+  }
+  return NULL;
+}
+#endif
 
 static inline void *memchr(const void *s, int c, uint32_t n) {
   const uint8_t *p = (const uint8_t *)s;
@@ -296,22 +328,17 @@ static inline void *memchr(const void *s, int c, uint32_t n) {
   return 0;
 }
 
-static inline void *memrchr(const void *s, int c, uint32_t n) {
-  const uint8_t *p = (const uint8_t *)s + n;
-  while (n--) {
-    p--;
-    if (*p == (uint8_t)c)
-      return (void *)p;
-  }
-  return 0;
-}
 
 /* ============== MATH.H FUNCTIONS (Integer) ============== */
 
-static inline int min(int a, int b) { return a < b ? a : b; }
-static inline int max(int a, int b) { return a > b ? a : b; }
+#ifndef min
+#define min(a, b) ((a) < (b) ? (a) : (b))
+#endif
+#ifndef max
+#define max(a, b) ((a) > (b) ? (a) : (b))
+#endif
 static inline int clamp(int v, int lo, int hi) {
-  return v < lo ? lo : (v > hi ? hi : v);
+  return min(max(v, lo), hi);
 }
 
 /* Integer square root */
@@ -453,6 +480,9 @@ static inline const char *strerror(int errnum) {
 #define LONG_MIN INT_MIN
 #define LONG_MAX INT_MAX
 #define ULONG_MAX UINT_MAX
+#define LLONG_MIN (-9223372036854775807LL - 1)
+#define LLONG_MAX 9223372036854775807LL
+#define ULLONG_MAX 18446744073709551615ULL
 #define PATH_MAX 256
 #define NAME_MAX 128
 
@@ -510,30 +540,38 @@ static inline void longjmp(jmp_buf env, int val) {
 
 /* ============== SIGNAL NAMES ============== */
 
+#ifndef _LIBC_SKIP_STANDARD_FUNCS
 static inline const char *strsignal(int sig) {
   switch (sig) {
   case 1:
-    return "Hangup";
+    return "SIGHUP";
   case 2:
-    return "Interrupt";
+    return "SIGINT";
   case 3:
-    return "Quit";
+    return "SIGQUIT";
+  case 4:
+    return "SIGILL";
+  case 5:
+    return "SIGTRAP";
   case 6:
-    return "Aborted";
+    return "SIGABRT";
+  case 8:
+    return "SIGFPE";
   case 9:
-    return "Killed";
+    return "SIGKILL";
   case 11:
-    return "Segmentation fault";
+    return "SIGSEGV";
   case 13:
-    return "Broken pipe";
+    return "SIGPIPE";
   case 14:
-    return "Alarm clock";
+    return "SIGALRM";
   case 15:
-    return "Terminated";
+    return "SIGTERM";
   default:
-    return "Unknown signal";
+    return "Unknown Signal";
   }
 }
+#endif
 
 /* ============== TIME FUNCTIONS ============== */
 
@@ -630,5 +668,7 @@ static inline char *asctime(const struct tm *tm) {
   strftime(buf, 32, "%a %b %d %H:%M:%S %Y", tm);
   return buf;
 }
+
+#endif // _LIBC_SKIP_STANDARD_FUNCS
 
 #endif /* _LIBC_H */

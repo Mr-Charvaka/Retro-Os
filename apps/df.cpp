@@ -3,7 +3,6 @@
 
 extern "C" void _start() {
   OS::Syscall::print("DF App: Starting...\n");
-
   OS::IPCClient app;
   if (!app.connect()) {
     OS::Syscall::exit(1);

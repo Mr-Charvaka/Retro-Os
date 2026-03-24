@@ -32,6 +32,7 @@ struct http_response {
   uint32_t body_length;
   uint32_t content_length;
   int chunked;
+  char location[256]; // NEW: For redirects
 };
 
 struct http_request {
@@ -44,9 +45,12 @@ struct http_request {
   uint32_t body_length;
 };
 
+enum { HEADER_OTHER, HEADER_CONTENT_TYPE, HEADER_LOCATION };
+
 struct parser_context {
   http_response *resp;
-  char last_header[64];
+  char last_field[64];
+  int current_header_type;
   uint8_t* temp_body;
   size_t temp_body_cap;
 };
@@ -100,8 +104,16 @@ static int http_strncasecmp(const char *s1, const char *s2, size_t n) {
 static int on_header_field(http_parser *p, const char *at, size_t length) {
   auto ctx = (parser_context *)p->data;
   size_t copy_len = length < 63 ? length : 63;
-  memcpy(ctx->last_header, at, copy_len);
-  ctx->last_header[copy_len] = 0;
+  memcpy(ctx->last_field, at, copy_len);
+  ctx->last_field[copy_len] = 0;
+
+  if (http_strncasecmp(at, "Content-Type", length) == 0) {
+    ctx->current_header_type = HEADER_CONTENT_TYPE;
+  } else if (http_strncasecmp(at, "Location", length) == 0) {
+    ctx->current_header_type = HEADER_LOCATION;
+  } else {
+    ctx->current_header_type = HEADER_OTHER;
+  }
   return 0;
 }
 
@@ -109,7 +121,7 @@ static int on_header_value(http_parser *p, const char *at, size_t length) {
   auto ctx = (parser_context *)p->data;
   if (ctx->resp->header_count < HTTP_MAX_HEADERS) {
     http_header *h = &ctx->resp->headers[ctx->resp->header_count];
-    strcpy(h->name, ctx->last_header);
+    strcpy(h->name, ctx->last_field);
     size_t copy_len = length < 255 ? length : 255;
     memcpy(h->value, at, copy_len);
     h->value[copy_len] = 0;
@@ -120,6 +132,13 @@ static int on_header_value(http_parser *p, const char *at, size_t length) {
       if (strstr(h->value, "chunked"))
         ctx->resp->chunked = 1;
     }
+
+    if (ctx->current_header_type == HEADER_LOCATION) {
+      size_t l = length < sizeof(ctx->resp->location) - 1 ? length : sizeof(ctx->resp->location) - 1;
+      memcpy(ctx->resp->location, at, l);
+      ctx->resp->location[l] = 0;
+    }
+
     ctx->resp->header_count++;
   }
   return 0;

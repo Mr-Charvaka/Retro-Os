@@ -36,6 +36,7 @@ void kfree(void *p);
 
 // Wrappers
 void *malloc(uint32_t size);
+void *realloc(void *ptr, uint32_t size);
 void free(void *p);
 
 #ifdef __cplusplus

@@ -8,6 +8,10 @@
 
 #include "syscall.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* ============== STRING FUNCTIONS ============== */
 
 static inline uint32_t strlen(const char *s) {
@@ -480,5 +484,9 @@ static inline uint32_t crc32(const uint8_t *data, uint32_t len) {
   }
   return ~crc;
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _USERLIB_H */

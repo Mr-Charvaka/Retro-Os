@@ -68,3 +68,75 @@ __attribute__((noreturn)) void __stack_chk_fail() {
   }
 }
 }
+#include <stdarg.h>
+#include <stdio.h>
+
+extern "C" int vsnprintf(char *str, size_t size, const char *format, va_list ap) {
+  size_t written = 0;
+  const char *f = format;
+  while (*f && written < size - 1) {
+    if (*f == '%') {
+      f++;
+      if (*f == '.') {
+        f++;
+        if (*f == '*') {
+          f++;
+          if (*f == 's') {
+            int len = va_arg(ap, int);
+            const char *s = va_arg(ap, const char *);
+            for (int i = 0; i < len && written < size - 1; i++) str[written++] = *s++;
+          }
+        }
+      } else if (*f == 's') {
+        const char *s = va_arg(ap, const char *);
+        while (*s && written < size - 1) str[written++] = *s++;
+      } else if (*f == 'd') {
+        int d = va_arg(ap, int);
+        if (d == 0) {
+          str[written++] = '0';
+        } else {
+          if (d < 0) {
+            str[written++] = '-';
+            d = -d;
+          }
+          char buf[12];
+          int i = 0;
+          while (d > 0) { buf[i++] = (d % 10) + '0'; d /= 10; }
+          while (i > 0 && written < size - 1) str[written++] = buf[--i];
+        }
+      } else if (*f == 'p') {
+        uint32_t p = va_arg(ap, uint32_t);
+        const char *hex = "0123456789ABCDEF";
+        for (int i = 7; i >= 0 && written < size - 1; i--) {
+          str[written++] = hex[(p >> (i * 4)) & 0xF];
+        }
+      } else if (*f == '%') {
+        str[written++] = '%';
+      }
+    } else {
+      str[written++] = *f;
+    }
+    f++;
+  }
+  str[written] = 0;
+  return written;
+}
+
+extern "C" int printf(const char *format, ...) {
+  char buf[512];
+  va_list args;
+  va_start(args, format);
+  int ret = vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  serial_log(buf);
+  return ret;
+}
+
+extern "C" char *strdup(const char *s) {
+  size_t len = 0;
+  while (s[len]) len++;
+  char *d = (char *)kmalloc(len + 1);
+  if (!d) return nullptr;
+  for (size_t i = 0; i <= len; i++) d[i] = s[i];
+  return d;
+}

@@ -5,7 +5,7 @@
 
 namespace Browser {
 
-void init();
+void init(bool is_dillo = false);
 void draw(Window *w);
 bool click(Window *w, int mx, int my);
 void key(Window *w, int k, int state);

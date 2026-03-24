@@ -5,13 +5,13 @@
    Warning: Isme panga mat lena varna boot nahi hoga.
    ========================================================= */
 
-#include "../drivers/serial.h"
 #include "../include/browser.h"
+#include "../drivers/serial.h"
 #include "../include/font.h"
 #include "../include/gui_common.h"
 #include "../include/string.h"
 #include "../include/vfs.h"
-#include "net_advanced.h" // Access to HTTP stack
+// Unused headers removed
 #include "pmm.h"
 #include "process.h"
 #include <stdint.h>
@@ -79,12 +79,33 @@ extern "C" void explorer_load_directory(const char *path);
 extern "C" void explorer_open_item(int index);
 extern "C" void explorer_double_click(int index);
 extern "C" void explorer_create_folder(const char *name);
-extern "C" void explorer_context_action(int index, int act);
 }
 
 struct Rect {
   int x, y, w, h;
 };
+
+struct ExplorerState {
+  ExplorerItem items[128];
+  int item_count;
+  char cwd[256];
+  int selected;
+  int hovered;
+  int scroll_y;
+  bool active;
+  // Flagship Disk Stats
+  struct DriveInfo {
+    char label[32];
+    char path[32];
+    uint32_t total;
+    uint32_t free;
+  } drives[8];
+  int drive_count;
+  bool show_disk_usage;
+};
+
+#define MAX_EXPLORERS 8
+static ExplorerState g_explorer_pool[MAX_EXPLORERS];
 
 /* 🚀 GPU ACCELERATION LAYER (Taaki smooth chale) */
 enum GpuCmdType { GPU_RECT, GPU_BLEND_RECT, GPU_TEXT, GPU_ICON };
@@ -129,15 +150,21 @@ void select_all();
 void select_path(const char *path);
 } // namespace DesktopSystem
 
-void launch_explorer();
+void launch_explorer(const char *path = nullptr);
+void launch_explorer_home();
+void explorer_draw(Window *w);
+bool explorer_click(Window *w, int rx, int ry);
+void explorer_key(Window *w, int k, int mod);
 void launch_terminal();
 void launch_sysmonitor();
 void launch_calculator();
-void launch_calculator();
-void launch_notepad();
 void launch_browser();
-void load_dir();
-void open_item(const char *path);
+void launch_net_test();
+  // Removed Office and Notepad launchers
+  // Removed browser launchers
+void load_dir(Window *w = nullptr);
+void open_item(const char *path, Window *parent = nullptr);
+void gui_refresh_all();
 
 bool name_match(const char *a, const char *b) {
   int i = 0;
@@ -502,20 +529,67 @@ void draw_icon(IconID id, int x, int y, int size, uint32_t accent) {
     FB::rect(x + 8, y + 20, size - 16, 2, 0xCCCCCC);
     FB::rect(x + 5, y + 2, size - 10, size / 6, 0x448AFF); // Header
     break;
+  // Browser icon removed
+  // Office icons removed
+  case ICON_DISK:
+    // Simple Hard Drive Icon
+    FB::rect(x + 2, y + 4, size - 4, size - 10, 0x777777); // Body
+    FB::rect(x + 4, y + size - 10, size - 8, 2, 0x444444);  // Base
+    FB::rect(x + size / 2 - 2, y + 8, 4, 2, 0x00FF00);   // LED
+    break;
+  case ICON_COMPUTER:
+    // Monitor + Base
+    FB::rect(x + 2, y + 2, size - 4, size * 2 / 3, 0x333333); // Screen frame
+    FB::rect(x + 4, y + 4, size - 8, size / 2, 0x99CCFF);      // Screen
+    FB::rect(x + size / 3, y + size * 2 / 3, size / 3, size / 6, 0x333333); // Stand
+    FB::rect(x + 2, y + size * 5 / 6, size - 4, size / 6, 0x333333); // Base
+    break;
   case ICON_BROWSER:
-    // Browser Icon (Globe style)
-    FB::rect(x, y, size, size, 0x222222);
-    // Rough Circle approximation
-    FB::rect(x + 4, y + 4, size - 8, size - 8, 0x2196F3);
-    // Grid lines
-    FB::rect(x + 4, y + size / 2 - 1, size - 8, 2, 0x64B5F6); // Equator
-    FB::rect(x + size / 2 - 1, y + 4, 2, size - 8, 0x64B5F6); // Meridian
-    // Highlights
-    FB::rect(x + size / 2 + 4, y + 8, 4, 4, 0xBBDEFB);
+    // Globe / World Icon
+    FB::rect(x + 4, y + 4, size - 8, size - 8, 0x4FC3F7); // Blue circle
+    FB::rect(x + size / 2 - 1, y + 4, 2, size - 8, 0xEEEEEE); // Meridian
+    FB::rect(x + 4, y + size / 2 - 1, size - 8, 2, 0xEEEEEE); // Equator
     break;
   }
 }
+IconID get_icon_for_path(const char *path, uint32_t type) {
+  if (strcmp(path, "computer:") == 0) return ICON_COMPUTER;
+  if (type == 2) { // Directory
+    if (strcmp(path, "/C") == 0 || strcmp(path, "/") == 0 || strncmp(path, "/storage/p", 10) == 0)
+      return ICON_DISK;
+    if (strcmp(path, "/dev") == 0 || strcmp(path, "/system") == 0)
+      return ICON_MONITOR;
+    return ICON_FOLDER;
+  }
 
+  // Files / Shortcuts
+  int len = strlen(path);
+  if (len < 5)
+    return ICON_FILE;
+
+  const char *name = path;
+  for (int i = 0; path[i]; i++)
+    if (path[i] == '/')
+      name = &path[i + 1];
+
+  if (strstr(name, "Explorer"))
+    return ICON_FOLDER;
+  if (strstr(name, "Terminal"))
+    return ICON_TERMINAL;
+  if (strstr(name, "Calculator"))
+    return ICON_CALC;
+  if (strstr(name, "Browser"))
+    return ICON_BROWSER;
+  // Office and Notepad apps removed
+  // Browser entries removed
+  if (strstr(name, "Welcome"))
+    return ICON_FILE;
+
+  if (len > 4 && strcmp(path + len - 4, ".txt") == 0)
+    return ICON_FILE;
+
+  return ICON_FILE;
+}
 } // namespace IconSystem
 
 /* =========================================================
@@ -572,11 +646,12 @@ struct MenuItem {
 
 struct ContextMenu {
   Rect area;
-  MenuItem items[12];
+  MenuItem items[16];
   int count;
   bool visible;
   ContextTarget target;
   char path[256];
+  Window *parent_win; // New field to track requester
 };
 
 static ContextMenu g_ctx_menu;
@@ -595,7 +670,8 @@ void add_extended_item(const char *label,
 }
 
 void show_context_menu(int x, int y, ContextTarget target, const char *path,
-                       ContextProvider *provider = nullptr) {
+                       ContextProvider *provider = nullptr, Window *parent = nullptr) {
+  g_ctx_menu.parent_win = parent;
   g_ctx_menu.area.x = x;
   g_ctx_menu.area.y = y;
   g_ctx_menu.area.w = 180;
@@ -693,7 +769,7 @@ void context_click(int index) {
     } else if (m.action == ACT_OPEN) {
       serial_log("GUI: Context Menu -> OPEN: ");
       serial_log(g_ctx_menu.path);
-      open_item(g_ctx_menu.path);
+      open_item(g_ctx_menu.path, g_ctx_menu.parent_win);
     } else {
       static ContextIntent intent; // Static to save stack
       intent.target = g_ctx_menu.target;
@@ -704,7 +780,7 @@ void context_click(int index) {
       serial_log("GUI: Executing context action on path: ");
       serial_log(intent.path);
       sys_context_execute(&intent);
-      DesktopSystem::refresh();
+      gui_refresh_all();
     }
   }
   g_ctx_menu.visible = false;
@@ -786,8 +862,7 @@ void handle_rename_key(int k) {
       strcpy(intent.new_path, new_path);
 
       sys_context_execute(&intent);
-      DesktopSystem::refresh();
-      load_dir(); // Refresh explorer too
+      gui_refresh_all();
     }
     g_rename.active = false;
     return;
@@ -1033,13 +1108,34 @@ bool handle_window_input(Window *w, int index) {
 /* =========================================================
    FILE EXPLORER (FINAL CONTRACT)
    ========================================================= */
-extern ExplorerItem items[];
-extern int item_count;
-static int selected = -1;
-static int hovered = -1;
-static int scroll_y = 0;
+// Forward declarations for integrated logic
+extern "C" void explorer_load_directory_ex(ExplorerState* state, const char *path);
+extern "C" void explorer_open_item_ex(ExplorerState* state, int index);
+
 static const int ITEM_H = 80;
-extern char cwd[];
+
+ExplorerState* get_explorer_state(Window* w) {
+    if (!w || !w->app_data) return nullptr;
+    return (ExplorerState*)w->app_data;
+}
+
+ExplorerState* alloc_explorer_state() {
+    for (int i = 0; i < MAX_EXPLORERS; i++) {
+        if (!g_explorer_pool[i].active) {
+            memset(&g_explorer_pool[i], 0, sizeof(ExplorerState));
+            g_explorer_pool[i].active = true;
+            g_explorer_pool[i].selected = -1;
+            g_explorer_pool[i].hovered = -1;
+            strcpy(g_explorer_pool[i].cwd, "/home/user/Desktop");
+            return &g_explorer_pool[i];
+        }
+    }
+    return nullptr;
+}
+
+void free_explorer_state(ExplorerState* state) {
+    if (state) state->active = false;
+}
 
 /* =========================================================
    4️⃣ DESKTOP SYSTEM (REAL DESKTOP)
@@ -1060,13 +1156,15 @@ const int GRID_X_OFF = 32;
 const int GRID_Y_OFF = 32;
 const int MAX_ICONS = 64;
 
-DesktopIcon icons[32]; // Increased capacity
+DesktopIcon icons[MAX_ICONS]; // Matches capacity
 static int icon_count = 0;
 static int dragging_icon_index = -1;
 static int drag_offset_x = 0;
 static int drag_offset_y = 0;
 static int prev_x = 0;
 static int prev_y = 0;
+static int last_clicked_index = -1;
+static uint32_t last_clicked_time = 0;
 
 void add_icon(const char *name, IconSystem::IconID icon, int x, int y,
               void (*launch)()) {
@@ -1123,72 +1221,52 @@ void refresh() {
 
   icon_count = 0;
 
-  // Lambda to preserve position if exists
-  auto add_or_update = [&](const char *name, IconSystem::IconID id,
-                           void (*func)()) {
+  auto add_or_update = [&](const char *name, IconSystem::IconID id, void (*func)()) {
     int tx = -1, ty = -1;
-    // Try find old pos
     for (int i = 0; i < old_count; i++) {
       if (name_match(old_icons[i].name, name)) {
-        tx = old_icons[i].x;
-        ty = old_icons[i].y;
+        tx = old_icons[i].x; ty = old_icons[i].y;
         break;
       }
     }
-
-    if (tx == -1) {
-      find_free_slot(tx, ty);
-    }
+    if (tx == -1) find_free_slot(tx, ty);
     add_icon(name, id, tx, ty, func);
   };
 
-  // 1. Fixed Icons
-  add_or_update("Explorer", IconSystem::ICON_FOLDER, launch_explorer);
-  add_or_update("Terminal", IconSystem::ICON_TERMINAL, launch_terminal);
-  add_or_update("Monitor", IconSystem::ICON_MONITOR, launch_sysmonitor);
-  add_or_update("Notepad", IconSystem::ICON_NOTEPAD, launch_notepad);
-  add_or_update("Browser", IconSystem::ICON_BROWSER, launch_browser);
-  add_or_update("Calculator", IconSystem::ICON_CALC, launch_calculator);
-
-  // 2. Load from REAL VFS (/home/user/Desktop)
   int fd = sys_open("/home/user/Desktop", 0);
   if (fd >= 1000) {
-    for (int i = 0; i < MAX_ICONS && icon_count < MAX_ICONS; i++) {
-      struct {
-        char name[64];
-        uint32_t type;
-      } tmp;
-      if (sys_readdir(fd, i, &tmp) != 0)
-        break;
-      if (tmp.name[0] == 0)
-        break;
-      if (strcmp(tmp.name, ".") == 0 || strcmp(tmp.name, "..") == 0)
-        continue;
-      if (name_match(tmp.name, "Home"))
-        continue;
+    for (int i = 0; i < MAX_ICONS; i++) {
+      struct { char name[64]; uint32_t type; } tmp;
+      if (sys_readdir(fd, i, &tmp) != 0) break;
+      if (tmp.name[0] == 0) break;
+      if (strcmp(tmp.name, ".") == 0 || strcmp(tmp.name, "..") == 0) continue;
 
-      // Avoid duplicating fixed icons if they exist as files (optional)
-      bool duplicate = false;
-      for (int k = 0; k < icon_count; k++) {
-        if (name_match(icons[k].name, tmp.name)) {
-          duplicate = true;
-          break;
-        }
+      char full[256];
+      strcpy(full, "/home/user/Desktop/");
+      strcat(full, tmp.name);
+
+      IconSystem::IconID icon = IconSystem::get_icon_for_path(full, tmp.type);
+      
+      void (*launch)() = nullptr;
+      if (tmp.type == 2) {
+          // If it's a folder, we let the default handler in handle_desktop_input 
+          // build the path dynamically.
+          launch = nullptr; 
       }
-      if (duplicate)
-        continue;
-
-      IconSystem::IconID icon =
-          (tmp.type == 2) ? IconSystem::ICON_FOLDER : IconSystem::ICON_FILE;
-      void (*launch)() = (tmp.type == 2) ? launch_explorer : nullptr;
+      else if (strstr(tmp.name, "Terminal")) launch = launch_terminal;
+      else if (strstr(tmp.name, "Calculator")) launch = launch_calculator;
+      else if (strstr(tmp.name, "Browser")) launch = launch_browser;
+      else if (strstr(tmp.name, "NetTest")) launch = launch_net_test;
+      // Notepad and Office links removed
+      // Browser links removed
+      else if (strstr(tmp.name, "Explorer")) launch = launch_explorer_home;
 
       add_or_update(tmp.name, icon, launch);
     }
     sys_close(fd);
-  } else {
-    serial_log("DESKTOP: Failed to open Desktop dir");
   }
 }
+
 
 void draw_desktop() {
   // Gradient background
@@ -1228,62 +1306,67 @@ void select_path(const char *path) {
 }
 
 void handle_desktop_input() {
-  if (Input::clicked()) {
+  bool clicked = Input::clicked();
+  int mx = Input::x();
+  int my = Input::y();
+
+  if (clicked) {
     bool hit = false;
     for (int i = 0; i < icon_count; i++) {
-      if (Input::x() >= icons[i].x && Input::x() < icons[i].x + 48 &&
-          Input::y() >= icons[i].y && Input::y() < icons[i].y + 48) {
+      // Hit area: 48x48 icon + some padding for the label below
+      if (mx >= icons[i].x - 4 && mx < icons[i].x + 52 &&
+          my >= icons[i].y - 4 && my < icons[i].y + 60) {
 
         serial_log("GUI: Desktop Icon Clicked: ");
         serial_log(icons[i].name);
 
-        // Double click launches
-        if (Input::is_double_click()) {
-          serial_log("GUI: Desktop Icon Double-Click - Launching...");
-          if (name_match(icons[i].name, "Explorer")) {
-            explorer_load_directory("/");
-            launch_explorer();
-          } else if (name_match(icons[i].name, "Terminal")) {
-            launch_terminal();
-          } else if (name_match(icons[i].name, "Monitor")) {
-            launch_sysmonitor();
-          } else if (name_match(icons[i].name, "Calculator")) {
-            launch_calculator();
-          } else if (name_match(icons[i].name, "Notepad")) {
-            launch_notepad();
-          } else if (name_match(icons[i].name, "Browser")) {
-            launch_browser();
+        bool already_selected = icons[i].selected;
+        uint32_t now = sys_time_ms();
+        bool is_local_dbl =
+            (last_clicked_index == i) && (now - last_clicked_time < 800);
+
+        // Double click OR Clicking already selected icon both can launch if
+        // is_double_click is picky
+        if ((Input::is_double_click() || is_local_dbl) && already_selected) {
+          serial_log("GUI: Launching from desktop...");
+          if (icons[i].launch) {
+            icons[i].launch();
           } else {
+            // Generic file launch
             char full[256];
             strcpy(full, "/home/user/Desktop/");
             strcat(full, icons[i].name);
-
             if (sys_is_dir(full)) {
-              explorer_load_directory(full);
-              launch_explorer();
+              serial_log("GUI: Opening Desktop folder in NEW window: ");
+              serial_log(full);
+              launch_explorer(full); // Use the new path-aware launch
             } else {
               sys_spawn(full, nullptr);
             }
           }
+          // Deselect after launch
+          icons[i].selected = false;
           dragging_icon_index = -1;
+          last_clicked_index = -1;
         } else {
-          serial_log("GUI: -> Selection / Drag Start");
+          // Select and start drag
           for (int k = 0; k < icon_count; k++)
             icons[k].selected = false;
           icons[i].selected = true;
 
           dragging_icon_index = i;
+          last_clicked_index = i;
+          last_clicked_time = now;
           prev_x = icons[i].x;
           prev_y = icons[i].y;
-          drag_offset_x = Input::x() - icons[i].x;
-          drag_offset_y = Input::y() - icons[i].y;
+          drag_offset_x = mx - icons[i].x;
+          drag_offset_y = my - icons[i].y;
         }
         hit = true;
         break;
       }
     }
     if (!hit) {
-      // Clicked on desktop empty area, deselect all
       for (int i = 0; i < icon_count; i++)
         icons[i].selected = false;
       dragging_icon_index = -1;
@@ -1336,423 +1419,57 @@ void handle_desktop_input() {
 
 } // namespace DesktopSystem
 
-/* =========================================================
-   6️⃣ BROWSER APPLICATION (HIGH END)
-   ========================================================= */
-namespace BrowserLegacy {
-
-struct BrowserState {
-  char url[256];
-  char content[65536]; // 64KB buffer for page
-  int content_len;
-  int scroll_y;
-  bool loading;
-  char status[64];
-  struct http_response response;
-  bool url_focused;
-  int url_cursor;
-};
-
-// Global state for simplicity (single instance for now)
-static BrowserState g_browser;
-
-void init() {
-  memset(&g_browser, 0, sizeof(BrowserState));
-  strcpy(g_browser.url, "http://info.cern.ch"); // Default homepage
-  strcpy(g_browser.status, "Ready");
-  g_browser.content_len = 0;
-  g_browser.url_focused = false;
-  g_browser.url_cursor = strlen(g_browser.url);
-}
-
-void navigate(const char *url) {
-  if (g_browser.loading)
-    return;
-
-  if (strlen(url) == 0)
-    return;
-
-  g_browser.loading = true;
-  strcpy(g_browser.status, "Loading...");
-
-  // Ensure URL starts with http://
-  char safe_url[256];
-  if (strncmp(g_browser.url, "http://", 7) != 0) {
-    strcpy(safe_url, "http://");
-    strcat(safe_url, g_browser.url);
-    // Update display URL too
-    strcpy(g_browser.url, safe_url);
-    g_browser.url_cursor = strlen(g_browser.url);
-  } else {
-    strcpy(safe_url, g_browser.url);
-  }
-
-  // Update URL if redirected or different
-  if (strcmp(g_browser.url, url) != 0 && strlen(url) > 0)
-    strcpy(g_browser.url, url);
-
-  serial_log("BROWSER: Navigating to...");
-  serial_log(safe_url);
-
-  // Clear previous content
-  memset(g_browser.content, 0, sizeof(g_browser.content));
-  g_browser.content_len = 0;
-  g_browser.scroll_y = 0;
-
-  int ret = http_get(safe_url, (uint8_t *)g_browser.content,
-                     sizeof(g_browser.content) - 1, &g_browser.response);
-
-  if (ret > 0) {
-    g_browser.content_len = ret;
-    g_browser.content[ret] = 0;
-    strcpy(g_browser.status, "Done");
-    serial_log("BROWSER: Content received bytes:");
-    serial_log_hex("", ret);
-  } else {
-    const char *err =
-        "<html><body><h1>Error</h1><p>Failed to load page.</p></body></html>";
-    strcpy(g_browser.content, err);
-    g_browser.content_len = strlen(err);
-    strcpy(g_browser.status, "Failed");
-    serial_log("BROWSER: Request failed");
-  }
-
-  g_browser.loading = false;
-}
-
-// Simple HTML Renderer
-void render_content(Window *w, int x, int y, int width, int height) {
-  int cx = x + 10;
-  int cy = y - g_browser.scroll_y;
-  int max_w = width - 20;
-
-  auto font_reg = FontSystem::font_load("default", 8);
-  auto font_h1 = FontSystem::font_load("bold", 16);
-  auto font_curr = font_reg;
-
-  uint32_t color = 0x333333; // Dark text on white background
-  bool in_tag = false;
-
-  const char *p = (const char *)g_browser.response.body;
-  if (!p || g_browser.response.body_length == 0) {
-    p = g_browser.content;
-    // Skip headers manually (fallback)
-    const char *split = strstr(p, "\r\n\r\n");
-    if (split)
-      p = split + 4;
-  }
-  char buf[256];
-  int bidx = 0;
-
-  auto flush_text = [&]() {
-    if (bidx > 0) {
-      buf[bidx] = 0;
-      // Wrap text
-      int word_len = 0;
-      char word[64];
-      int widx = 0;
-      for (int i = 0; i <= bidx; i++) {
-        if (buf[i] == ' ' || buf[i] == 0) {
-          word[widx] = 0;
-          int w_px = FontSystem::text_width(font_curr, word);
-          if (cx + w_px > x + max_w) {
-            cx = x + 10;
-            cy += (font_curr.size == 8 ? 12 : 20);
-          }
-          if (cy + 10 > y && cy < y + height) {
-            FontSystem::draw_text(font_curr, cx, cy, word, color);
-          }
-          cx += w_px + 8;
-          widx = 0;
-        } else {
-          word[widx++] = buf[i];
-        }
-      }
-      bidx = 0;
-    }
-  };
-
-  // Helper declarations for local use in this function scope or moved above
-  // but since we are inside a function, let's just use forward declarations or
-  // move valid code up Actually, I will just paste the helpers here as a lambda
-  // or static function is tricky inside Wait, I can't define functions inside
-  // functions easily in C++ without lambdas. I will assume the previous step
-  // failed because of ordering. Lets use a forward declaration or just move the
-  // implementation up in the file in a separate step? No, I can simply define
-  // them as lambdas!
-
-  auto my_tolower = [](int c) -> int {
-    if (c >= 'A' && c <= 'Z')
-      return c + 32;
-    return c;
-  };
-
-  auto my_strncasecmp = [&](const char *s1, const char *s2, int n) -> int {
-    if (n == 0)
-      return 0;
-    while (n-- != 0 && my_tolower(*s1) == my_tolower(*s2)) {
-      if (n == 0 || *s1 == '\0' || *s2 == '\0')
-        break;
-      s1++;
-      s2++;
-    }
-    return my_tolower(*(unsigned char *)s1) - my_tolower(*(unsigned char *)s2);
-  };
-
-  bool hide_content = false;
-  char tag_name[32];
-  int tag_idx = 0;
-
-  while (*p) {
-    if (*p == '<') {
-      flush_text();
-      in_tag = true;
-      tag_idx = 0;
-      memset(tag_name, 0, sizeof(tag_name));
-    } else if (*p == '>') {
-      in_tag = false;
-
-      // Process Tag
-      if (tag_idx > 0) {
-        // Simple block elements -> Newline
-        if (my_strncasecmp(tag_name, "br", 2) == 0 ||
-            my_strncasecmp(tag_name, "p", 1) == 0 ||
-            my_strncasecmp(tag_name, "div", 3) == 0 ||
-            my_strncasecmp(tag_name, "li", 2) == 0 ||
-            my_strncasecmp(tag_name, "/p", 2) == 0 ||
-            my_strncasecmp(tag_name, "/div", 4) == 0 ||
-            my_strncasecmp(tag_name, "/li", 3) == 0 ||
-            my_strncasecmp(tag_name, "tr", 2) == 0) {
-
-          cx = x + 10;
-          cy += 12;
-        }
-        // Headers
-        else if (my_strncasecmp(tag_name, "h1", 2) == 0) {
-          font_curr = font_h1;
-          cy += 16;
-          cx = x + 10;
-        } else if (my_strncasecmp(tag_name, "/h1", 3) == 0) {
-          font_curr = font_reg;
-          cy += 16;
-          cx = x + 10;
-        } else if (my_strncasecmp(tag_name, "h2", 2) == 0) {
-          font_curr = font_h1;
-          cy += 14;
-          cx = x + 10;
-        } else if (my_strncasecmp(tag_name, "/h2", 3) == 0) {
-          font_curr = font_reg;
-          cy += 14;
-          cx = x + 10;
-        }
-        // Ignored Content Tags (Start)
-        else if (my_strncasecmp(tag_name, "script", 6) == 0 ||
-                 my_strncasecmp(tag_name, "style", 5) == 0 ||
-                 my_strncasecmp(tag_name, "title", 5) == 0 ||
-                 my_strncasecmp(tag_name, "head", 4) == 0) {
-          hide_content = true;
-        }
-        // Ignored Content Tags (End)
-        else if (my_strncasecmp(tag_name, "/script", 7) == 0 ||
-                 my_strncasecmp(tag_name, "/style", 6) == 0 ||
-                 my_strncasecmp(tag_name, "/title", 6) == 0 ||
-                 my_strncasecmp(tag_name, "/head", 5) == 0) {
-          hide_content = false;
-        }
-      }
-
-    } else {
-      if (in_tag) {
-        if (tag_idx < 30) {
-          tag_name[tag_idx++] = *p;
-        }
-      } else {
-        if (!hide_content && *p != '\r' && *p != '\n' && *p != '\t') {
-          buf[bidx++] = *p;
-          if (bidx >= 63)
-            flush_text();
-        }
-      }
-    }
-    p++;
-  }
-  flush_text();
-}
-
-// Helper for tolower since we don't include ctype.h
-static int tolower(int c) {
-  if (c >= 'A' && c <= 'Z')
-    return c + 32;
-  return c;
-}
-
-int strncasecmp(const char *s1, const char *s2, int n) {
-  if (n == 0)
-    return 0;
-  while (n-- != 0 && tolower(*s1) == tolower(*s2)) {
-    if (n == 0 || *s1 == '\0' || *s2 == '\0')
-      break;
-    s1++;
-    s2++;
-  }
-  return tolower(*(unsigned char *)s1) - tolower(*(unsigned char *)s2);
-}
-
-// Keyboard Handler
-void key(Window *w, int k, int state) {
-  if (state == 0)
-    return; // Only key down
-
-  if (g_browser.url_focused) {
-    int len = strlen(g_browser.url);
-
-    if (k == 8) { // Backspace
-      if (len > 0) {
-        g_browser.url[len - 1] = 0;
-        g_browser.url_cursor--;
-      }
-    } else if (k == 13) { // Enter
-      g_browser.url_focused = false;
-      navigate(g_browser.url);
-    } else if (k >= 32 && k <= 126) {
-      if (len < 255) {
-        g_browser.url[len] = (char)k;
-        g_browser.url[len + 1] = 0;
-        g_browser.url_cursor++;
-      }
+void gui_refresh_all() {
+  DesktopSystem::refresh();
+  for (int i = 0; i < win_count[current_desktop]; i++) {
+    Window *w = &windows[current_desktop][i];
+    if (w->alive && w->draw == (DrawFn)explorer_draw) {
+      load_dir(w);
     }
   }
 }
-
-void draw(Window *w) {
-  // Chrome-like UI Constants
-  int tab_h = 28;
-  int toolbar_h = 36;
-  int total_top = tab_h + toolbar_h;
-
-  // 1. Tab Bar Background (Chrome Grey)
-  FB::rect(w->x, w->y - tab_h, w->w, tab_h, 0xDDE1E6);
-
-  // Active Tab Shape (Trapezoid-ish / Rounded Top)
-  int tab_w = 180;
-  FB::rect(w->x + 8, w->y - tab_h + 4, tab_w, tab_h - 4, 0xFFFFFF); // Main body
-  // Rounded corners (simulated)
-  FB::put(w->x + 8, w->y - tab_h + 4, 0xDDE1E6);
-  FB::put(w->x + 8 + tab_w - 1, w->y - tab_h + 4, 0xDDE1E6);
-
-  auto font = FontSystem::font_load("default", 8);
-  FontSystem::draw_text(font, w->x + 20, w->y - tab_h + 10, "New Tab",
-                        0x333333);
-  IconSystem::draw_icon(IconSystem::ICON_CLOSE, w->x + tab_w - 14,
-                        w->y - tab_h + 10, 8, 0x555555);
-
-  // 2. Toolbar Background (White)
-  FB::rect(w->x, w->y, w->w, toolbar_h, 0xFFFFFF);
-  FB::rect(w->x, w->y + toolbar_h, w->w, 1, 0xE0E0E0); // Separator
-
-  // Nav Buttons
-  UI::button(w->x + 8, w->y + 6, 24, 24, "<", false);
-  UI::button(w->x + 36, w->y + 6, 24, 24, ">", false);
-  UI::button(w->x + 64, w->y + 6, 24, 24, "R", false); // Refresh
-
-  // URL Bar (Pill Shape)
-  int url_x = w->x + 100;
-  int url_w = w->w - 140; // Leave space for menu
-  int url_h = 26;
-  int url_y = w->y + 5;
-
-  uint32_t url_bg = g_browser.url_focused ? 0xFFFFFF : 0xF1F3F4;
-  uint32_t url_border =
-      g_browser.url_focused ? 0x1A73E8 : 0xF1F3F4; // Blue focus
-
-  FB::rect(url_x, url_y, url_w, url_h, url_bg);
-
-  // Borders
-  if (g_browser.url_focused) {
-    FB::rect(url_x, url_y, url_w, 1, url_border);
-    FB::rect(url_x, url_y + url_h - 1, url_w, 1, url_border);
-    FB::rect(url_x, url_y, 1, url_h, url_border);
-    FB::rect(url_x + url_w - 1, url_y, 1, url_h, url_border);
-  }
-
-  // URL Text
-  if (strlen(g_browser.url) > 0) {
-    FontSystem::draw_text(font, url_x + 12, url_y + 8, g_browser.url, 0x000000);
-  } else {
-    FontSystem::draw_text(font, url_x + 12, url_y + 8,
-                          "Search Google or type a URL", 0xAAAAAA);
-  }
-
-  // Cursor
-  if (g_browser.url_focused) {
-    int cursor_x = url_x + 12 + strlen(g_browser.url) * 8;
-    FB::rect(cursor_x, url_y + 6, 1, 14, 0x000000);
-  }
-
-  // Content Area
-  int content_y = w->y + toolbar_h;
-  int content_h = w->h - toolbar_h;
-
-  FB::rect(w->x, content_y, w->w, content_h, 0xFFFFFF);
-
-  if (g_browser.loading) {
-    FontSystem::draw_text(font, w->x + w->w / 2 - 30, content_y + 40,
-                          "Loading...", 0x333333);
-  } else {
-    render_content(w, w->x, content_y, w->w, content_h);
-  }
-}
-
-bool click(Window *w, int mx, int my) {
-  int toolbar_h = 36;
-  int url_x = 100;
-
-  // Check URL Bar
-  if (my >= 0 && my <= toolbar_h) {
-    if (mx >= url_x && mx < w->w - 40) {
-      g_browser.url_focused = true;
-      serial_log("BROWSER: Focused URL");
-    } else {
-      g_browser.url_focused = false;
-
-      // Check Buttons
-      if (mx >= 8 && mx < 32) { // Back
-        serial_log("BROWSER: Back");
-      } else if (mx >= 64 && mx < 88) { // Refresh
-        navigate(g_browser.url);
-      }
-    }
-  } else {
-    g_browser.url_focused = false;
-  }
-
-  return true;
-}
-
-} // namespace BrowserLegacy
 
 void launch_browser() {
-  Browser::init();                          // Reset state
-  Browser::navigate("http://info.cern.ch"); // Auto-load
-  create_window(100, 100, 800, 600, "Web Browser", &ThemeEngine::desktop_theme,
-                Browser::draw, Browser::click, Browser::key);
+  serial_log("GUI: Launching Internal Browser...");
+  Browser::init(false); // is_dillo = false
+  Window *w = create_window(50, 50, 800, 600, "Retro Browser", nullptr,
+                            (DrawFn)Browser::draw, (ClickFn)Browser::click);
+  if (w) {
+    w->wants_keyboard = true;
+    w->key = (KeyFn)Browser::key;
+    Browser::navigate("http://www.google.com");
+  }
+}
+
+void launch_dillo() {
+  serial_log("GUI: Launching Dillo Engine...");
+  Browser::init(true); // is_dillo = true
+  Window *w = create_window(100, 100, 800, 600, "Dillo", nullptr,
+                            (DrawFn)Browser::draw, (ClickFn)Browser::click);
+  if (w) {
+    w->wants_keyboard = true;
+    w->key = (KeyFn)Browser::key;
+    Browser::navigate("file:///C/WELCOME.HTML");
+  }
 }
 
 int explorer_hit_test(Window *w, int mx, int my) {
+  ExplorerState *es = get_explorer_state(w);
+  if (!es) return -1;
+
   int sidebar_w = 160;
   int header_h = 40;
-  int start_y = w->y + header_h + 20; // header_h + padding
+  int start_y = w->y + header_h + 20;
 
   int visible_w = w->w - sidebar_w;
   int icon_cols = (visible_w - 40) / 90;
-  if (icon_cols < 1)
-    icon_cols = 1;
+  if (icon_cols < 1) icon_cols = 1;
 
-  for (int i = 0; i < item_count; i++) {
+  for (int i = 0; i < es->item_count; i++) {
     int col = i % icon_cols;
     int row = i / icon_cols;
     int x = w->x + sidebar_w + 20 + col * 90;
-    int y = start_y + row * ITEM_H - scroll_y;
+    int y = start_y + row * ITEM_H - es->scroll_y;
 
     if (mx >= x && mx < x + 72 && my >= y && my < y + 72)
       return i;
@@ -1760,244 +1477,252 @@ int explorer_hit_test(Window *w, int mx, int my) {
   return -1;
 }
 
-void load_dir() { explorer_load_directory(cwd); }
+void load_dir(Window *w) { 
+  ExplorerState *es = get_explorer_state(w);
+  if (!es) return;
+  explorer_load_directory_ex(es, es->cwd);
+}
 
-void open_item(const char *path) {
-  // Integrated into explorer_contract, but kept for legacy calls
+void open_item(const char *path, Window *parent) {
+  serial_log("GUI: open_item called for path: ");
+  serial_log(path);
+
+  if (path && strncmp(path, "/home/user/Desktop/", 19) == 0) {
+    const char *name = path + 19;
+    for (int i = 0; i < DesktopSystem::icon_count; i++) {
+      if (name_match(DesktopSystem::icons[i].name, name)) {
+        if (DesktopSystem::icons[i].launch) {
+          DesktopSystem::icons[i].launch();
+          return;
+        }
+      }
+    }
+  }
+
   if (sys_is_dir(path)) {
-    explorer_load_directory(path);
+    if (parent && parent->draw == (DrawFn)explorer_draw) {
+      ExplorerState *es = get_explorer_state(parent);
+      if (es) {
+        serial_log("GUI: Navigating existing window to: ");
+        serial_log(path);
+        strcpy(es->cwd, path);
+        load_dir(parent);
+        return;
+      }
+    }
+    serial_log("GUI: Opening directory in NEW Explorer window...");
+    launch_explorer(path);
   } else {
-    sys_spawn(path, nullptr);
+    int len = strlen(path);
+    if (len > 4 && name_match(path + len - 4, ".elf")) {
+      sys_spawn(path, nullptr);
+    } else if (len > 4 && name_match(path + len - 4, ".txt")) {
+      char *argv[] = {(char *)"/TEXTVIEW.ELF", (char *)path, nullptr};
+      sys_spawn("/TEXTVIEW.ELF", argv);
+    } else {
+      sys_spawn(path, nullptr);
+    }
   }
 }
 
 void explorer_draw(Window *w) {
-  auto font = FontSystem::font_load("default", 8);
+  ExplorerState *es = get_explorer_state(w);
+  if (!es) return;
+
+  es->hovered = explorer_hit_test(w, Input::x(), Input::y());
+
+  // Background
+  FB::rect(w->x, w->y, w->w, w->h, 0xFFFFFF);
+
   int sidebar_w = 160;
-  int header_h = 40; // Reduced header (no tabs)
+  int header_h = 40;
 
-  // 1. Window Background
-  FB::rect(w->x, w->y, w->w, w->h, 0x1A1025);
+  // Header
+  FB::rect(w->x, w->y, w->w, header_h, 0xF5F5F5);
+  FB::rect(w->x, w->y + header_h - 1, w->w, 1, 0xDDDDDD);
 
-  // 2. Toolbar (Nav + Actions)
-  int toolbar_y = w->y; // Starts at top now
-  FB::rect(w->x, toolbar_y, w->w, header_h, 0x201530);
+  auto font = FontSystem::font_load("default", 8);
+  IconSystem::draw_icon(IconSystem::ICON_BACK, w->x + 10, w->y + 10, 20, 0x666666);
+  const char* display_path = (strcmp(es->cwd, "computer:") == 0) ? "This PC" : es->cwd;
+  FontSystem::draw_text(font, w->x + 40, w->y + 13, display_path, 0x333333);
 
-  // Nav Buttons
-  IconSystem::draw_icon(IconSystem::ICON_BACK, w->x + 12, toolbar_y + 12, 16,
-                        0xFFFFFF);
-  // Red Close button (matching image)
-  FB::rect(w->x + 40, toolbar_y + 12, 16, 16, 0xFF4444);
+  // Sidebar
+  FB::rect(w->x, w->y + header_h, sidebar_w, w->h - header_h, 0xF9F9F9);
+  FB::rect(w->x + sidebar_w - 1, w->y + header_h, 1, w->h - header_h, 0xDDDDDD);
 
-  // Address Breadcrumb
-  FB::rect(w->x + 70, toolbar_y + 8, w->w - 200, 24, 0x150E20);
-  FontSystem::draw_text(font, w->x + 80, toolbar_y + 16, cwd, 0xE0E0E0);
+  const char *places[] = {"This PC", "Desktop", "Documents", "Pictures", "Music", "C:\\"};
+  const char *paths[] = {"computer:", "/home/user/Desktop", "/home/user/Documents", "/home/user/Pictures", "/home/user/Music", "/C"};
+  
+  for (int i = 0; i < 6; i++) {
+    int iy = w->y + header_h + 20 + i * 30;
+    bool hover = (Input::x() >= w->x && Input::x() < w->x + sidebar_w &&
+                  Input::y() >= iy && Input::y() < iy + 30);
+    bool active = (strcmp(es->cwd, paths[i]) == 0);
 
-  // Sidebar (Left)
-  int content_y = w->y + header_h;
-  int content_h = w->h - header_h; // No footer
-
-  FB::rect(w->x, content_y, sidebar_w, content_h, 0x180E22);
-
-  const char *sidebar_items[] = {"Home",      "Desktop",   "Pictures",
-                                 "Documents", "Downloads", "Projects",
-                                 "This PC",   "Network"};
-
-  for (int i = 0; i < 8; i++) {
-    int item_y = content_y + 10 + i * 32;
-    bool active = false;
-    if (strcmp(sidebar_items[i], "Home") == 0 && strcmp(cwd, "/home/user") == 0)
-      active = true;
-    if (strcmp(sidebar_items[i], "Desktop") == 0 &&
-        strcmp(cwd, "/home/user/Desktop") == 0)
-      active = true;
-
-    if (active) {
-      FB::rect(w->x + 8, item_y - 4, sidebar_w - 16, 28, 0x352050);
-      FB::rect(w->x + 8, item_y + 4, 3, 12, 0xFF4FD8);
-    }
-
-    uint32_t icon_col = (i == 4) ? 0xFFA500 : 0xFF4FD8;
-    IconSystem::draw_icon(IconSystem::ICON_FOLDER, w->x + 20, item_y, 16,
-                          icon_col);
-
-    FontSystem::draw_text(font, w->x + 44, item_y + 6, sidebar_items[i],
-                          active ? 0xFFFFFF : 0xAAAAAA);
+    if (active) FB::rect(w->x + 5, iy, sidebar_w - 10, 25, 0xE0E0FF);
+    else if (hover) FB::rect(w->x + 5, iy, sidebar_w - 10, 25, 0xEEEEEE);
+    
+    FontSystem::draw_text(font, w->x + 20, iy + 5, places[i], active ? 0x3333FF : 0x555555);
   }
 
-  // 5. Main Content Area
-  int main_x = w->x + sidebar_w;
-  int main_w = w->w - sidebar_w;
-  FB::rect(main_x, content_y, main_w, content_h, 0x150F20);
-
-  hovered = explorer_hit_test(w, Input::x(), Input::y());
-
-  int visible_w = w->w - sidebar_w;
-  int visible_h = content_h;
+  // Content
   int content_x = w->x + sidebar_w;
+  int content_y = w->y + header_h;
+  int visible_w = w->w - sidebar_w;
+  int visible_h = w->h - header_h;
 
-  if (Input::x() >= main_x && Input::y() >= content_y &&
-      Input::y() < content_y + content_h) {
-    if (Input::held() && Input::y() < content_y + 50)
-      scroll_y -= 5;
-    if (Input::held() && Input::y() > content_y + visible_h - 50)
-      scroll_y += 5;
+  if (es->show_disk_usage && es->drive_count > 0) {
+      FontSystem::draw_text(font, content_x + 20, content_y + 15, "Devices and drives", 0x444444);
+      
+      int dx = content_x + 20;
+      int dy = content_y + 40;
+      
+      for (int i = 0; i < es->drive_count; i++) {
+          IconSystem::draw_icon(IconSystem::ICON_DISK, dx, dy, 40, 0xFFFFFF);
+          
+          FontSystem::draw_text(font, dx + 50, dy, es->drives[i].label, 0x000000);
+          
+          // Progress Bar
+          FB::rect(dx + 50, dy + 18, 180, 14, 0xEEEEEE);
+          if (es->drives[i].total > 0) {
+              uint32_t used = es->drives[i].total - es->drives[i].free;
+              int bar_w = (int)((uint64_t)used * 180 / es->drives[i].total);
+              if (bar_w > 180) bar_w = 180;
+              FB::rect(dx + 50, dy + 18, bar_w, 14, (bar_w > 150) ? 0xFF0000 : 0x0078D7); // Red if full
+          }
+          
+          // Text Usage
+          uint32_t total_mb = es->drives[i].total / (1024 * 1024);
+          uint32_t free_mb = es->drives[i].free / (1024 * 1024);
+          char stats[128];
+          char sf[32], st[32];
+          itoa(free_mb, sf, 10);
+          itoa(total_mb, st, 10);
+          strcpy(stats, sf);
+          strcat(stats, " MB free of ");
+          strcat(stats, st);
+          strcat(stats, " MB");
+          
+          FontSystem::draw_text(font, dx + 50, dy + 35, stats, 0x777777);
+          
+          // Move to next drive slot
+          dx += 260;
+          if (dx + 240 > content_x + visible_w) {
+              dx = content_x + 20;
+              dy += 80;
+          }
+      }
+      
+      content_y = dy + 60;
+      visible_h -= (content_y - (w->y + header_h));
   }
-  if (scroll_y < 0)
-    scroll_y = 0;
 
-  // 5. Icons / Files
   int icon_cols = (visible_w - 40) / 90;
-  if (icon_cols < 1)
-    icon_cols = 1;
-  int total_h = ((item_count + icon_cols - 1) / icon_cols) * ITEM_H + 40;
+  if (icon_cols < 1) icon_cols = 1;
 
-  for (int i = 0; i < item_count; i++) {
+  for (int i = 0; i < es->item_count; i++) {
     int col = i % icon_cols;
     int row = i / icon_cols;
-    int item_x = content_x + 20 + col * 90;
-    int item_y = content_y + 20 + row * ITEM_H - scroll_y;
+    int x = content_x + 20 + col * 90;
+    int y = content_y + 20 + row * ITEM_H - es->scroll_y;
 
-    if (item_y + ITEM_H < content_y || item_y > w->y + w->h)
-      continue;
+    if (y + ITEM_H < content_y || y > content_y + visible_h) continue;
 
-    if (i == hovered) {
-      FB::blend_rect(item_x - 5, item_y - 5, 82, 82, 0xFFFFFF, 30);
-    }
-    if (i == selected) {
-      FB::blend_rect(item_x - 5, item_y - 5, 82, 82, 0x3366FF, 60);
+    if (es->selected == i) {
+      FB::blend_rect(x - 5, y - 5, 80, 85, 0x3366FF, 40);
+    } else if (es->hovered == i) {
+      FB::blend_rect(x - 5, y - 5, 80, 85, 0xEEEEEE, 128);
     }
 
-    uint32_t accent = (items[i].type == 2) ? 0xFFD166 : 0x44AAFF;
-    IconSystem::draw_icon(items[i].type == 2 ? IconSystem::ICON_FOLDER
-                                             : IconSystem::ICON_FILE,
-                          item_x + 16, item_y, 40, accent);
+    IconSystem::IconID icon = IconSystem::get_icon_for_path(es->items[i].full_path, es->items[i].type);
+    IconSystem::draw_icon(icon, x + 12, y, 48, 0xFFFFFF);
 
-    FontSystem::draw_text(font, item_x, item_y + 50, items[i].name, 0xDDDDDD);
+    char disp[16];
+    strncpy(disp, es->items[i].name, 12); disp[12] = 0;
+    if (strlen(es->items[i].name) > 12) strcat(disp, "..");
+    
+    int tx = x + (48 - FontSystem::text_width(font, disp)) / 2;
+    FontSystem::draw_text(font, tx + 12, y + 55, disp, 0x333333);
   }
 
-  int max_scroll = total_h - visible_h + 20;
-  if (max_scroll < 0)
-    max_scroll = 0;
-  if (scroll_y > max_scroll)
-    scroll_y = max_scroll;
-
+  // Scrollbar
+  int total_h = ((es->item_count + icon_cols - 1) / icon_cols) * ITEM_H + 40;
   if (total_h > visible_h) {
-    Scroll s = {scroll_y, total_h};
-    draw_scrollbar({w->x + w->w - 8, content_y, 8, content_h}, &s);
+    int sb_h = (visible_h * visible_h) / total_h;
+    if (sb_h < 20) sb_h = 20;
+    int sb_y = content_y + (es->scroll_y * (visible_h - sb_h)) / (total_h - visible_h);
+    FB::rect(w->x + w->w - 8, sb_y, 4, sb_h, 0xCCCCCC);
   }
 }
 
 bool explorer_click(Window *w, int rx, int ry) {
+  ExplorerState *es = get_explorer_state(w);
+  if (!es) return false;
+
   int sidebar_w = 160;
   int header_h = 40;
-  int footer_h = 0; // No footer
 
-  // 1. Sidebar Click
-  if (rx < sidebar_w && ry >= header_h && ry < w->h) {
-    int item_idx = (ry - header_h - 10) / 32;
-    const char *new_path = nullptr;
-
-    if (item_idx == 0)
-      new_path = "/home/user";
-    else if (item_idx == 1)
-      new_path = "/home/user/Desktop";
-    else if (item_idx == 2)
-      new_path = "/home/user/Pictures";
-    else if (item_idx == 3)
-      new_path = "/home/user/Documents";
-    else if (item_idx == 4)
-      new_path = "/home/user/Downloads";
-    else if (item_idx == 5)
-      new_path = "/home/user/Projects";
-    else if (item_idx == 6)
-      new_path = "/";
-    else if (item_idx == 7)
-      new_path = "/dev"; // Network placeholder -> dev
-
-    if (new_path && item_idx >= 0 && item_idx <= 7) {
-      strcpy(cwd, new_path);
-      load_dir();
-      selected = -1;
-      return true;
-    }
-    return false;
-  }
-
-  // 2. Toolbar / Back Button
-  if (ry > 0 && ry < header_h) {
-    // Back button location: x=12, y=toolbar_y+8 (32+8=40).
-    // Correcting hit test relative to window `rx` `ry`.
-    // Toolbar starts at y=32. Icons are at y=40, size 16.
-    if (rx >= 12 && rx <= 28) { // Back
-      // Parent dir logic
-      int len = 0;
-      while (cwd[len])
-        len++;
-      for (int i = len - 1; i > 0; i--) {
-        if (cwd[i] == '/') {
-          cwd[i] = 0;
-          break;
-        }
-      }
-      if (cwd[0] == 0) {
-        cwd[0] = '/';
-        cwd[1] = 0;
-      }
-      load_dir();
-      selected = -1;
+  // Sidebar
+  if (rx < sidebar_w && ry >= header_h) {
+    int idx = (ry - header_h - 20) / 30;
+    const char *paths[] = {"computer:", "/home/user/Desktop", "/home/user/Documents", "/home/user/Pictures", "/home/user/Music", "/C"};
+    if (idx >= 0 && idx < 6) {
+      strcpy(es->cwd, paths[idx]);
+      load_dir(w);
+      es->selected = -1;
       return true;
     }
   }
 
-  // 3. Main Content Area
-  if (rx >= sidebar_w && ry >= header_h && ry < w->h - footer_h) {
-    if (hovered >= 0 && hovered < item_count) {
-      bool dbl = Input::is_double_click();
-      if (hovered == selected && dbl) {
-        explorer_double_click(hovered);
-        selected = -1;
+  // Back Button
+  if (ry < header_h && rx >= 10 && rx <= 35) {
+    int len = strlen(es->cwd);
+    for (int i = len - 1; i > 0; i--) {
+      if (es->cwd[i] == '/') { es->cwd[i] = 0; break; }
+    }
+    if (es->cwd[0] == 0) { es->cwd[0] = '/'; es->cwd[1] = 0; }
+    load_dir(w);
+    es->selected = -1;
+    return true;
+  }
+
+  // Content
+  if (rx >= sidebar_w && ry >= header_h) {
+    if (es->hovered >= 0 && es->hovered < es->item_count) {
+      if (es->selected == es->hovered && Input::is_double_click()) {
+          ExplorerItem &it = es->items[es->hovered];
+          if (it.type == 2) {
+              strcpy(es->cwd, it.full_path);
+              load_dir(w);
+          } else {
+              open_item(it.full_path, w);
+          }
+          es->selected = -1;
       } else {
-        selected = hovered;
-        serial_log("GUI: Explorer SELECTED: ");
-        serial_log(items[selected].name);
+          es->selected = es->hovered;
       }
       return true;
     }
-    // Click on background -> Deselect
-    selected = -1;
+    es->selected = -1;
     return true;
   }
 
   return false;
 }
 
-void explorer_key(Window *w, int key, int state) {
-  if (state == 0)
-    return;
+void explorer_key(Window *w, int k, int mod) {
+    ExplorerState *es = get_explorer_state(w);
+    if (!es) return;
+    if (k == 0x48) es->scroll_y -= 20; // Up
+    if (k == 0x50) es->scroll_y += 20; // Down
+    if (es->scroll_y < 0) es->scroll_y = 0;
+}
 
-  if (key == 0x48) { // UP
-    if (selected >= 5)
-      selected -= 5;
-  } else if (key == 0x50) { // DOWN
-    if (selected < item_count - 5)
-      selected += 5;
-  } else if (key == 0x4B) { // LEFT
-    if (selected > 0)
-      selected--;
-  } else if (key == 0x4D) { // RIGHT
-    if (selected < item_count - 1)
-      selected++;
-  } else if (key == 0x0E) { // Backspace
-    explorer_click(w, w->w - 32, 12);
-  } else if (key == 0x01) { // ESC
-    selected = -1;
-  } else if (key == 0x1C) { // Enter
-    if (selected >= 0 && selected < item_count) {
-      explorer_double_click(selected);
-      selected = -1;
-    }
-  }
+int explorer_context_items(ExtendedAction *out, int max, const char *path, void *ctx) {
+  (void)ctx; (void)max; (void)path;
+  out[0] = {"Properties", nullptr};
+  out[1] = {"Open in Terminal", nullptr};
+  return 2;
 }
 
 void on_right_click(int x, int y) {
@@ -2017,14 +1742,19 @@ void on_right_click(int x, int y) {
       const char *path = "/";
 
       if (w->draw == (DrawFn)explorer_draw) {
-        int idx = explorer_hit_test(w, x, y);
-        if (idx >= 0 && idx < item_count) {
-          target = (items[idx].type == 2) ? TARGET_FOLDER : TARGET_FILE;
-          path = items[idx].full_path;
+        ExplorerState *es = get_explorer_state(w);
+        if (es) {
+            int idx = explorer_hit_test(w, x, y);
+            if (idx >= 0 && idx < es->item_count) {
+              target = (es->items[idx].type == 2) ? TARGET_FOLDER : TARGET_FILE;
+              path = es->items[idx].full_path;
+            } else {
+              path = es->cwd;
+            }
         }
       }
 
-      show_context_menu(x, y, target, path, &w->context_provider);
+      show_context_menu(x, y, target, path, &w->context_provider, w);
       return;
     }
   }
@@ -2118,22 +1848,24 @@ void draw_cursor(int x, int y) {
 /* =========================================================
    MAIN LOOP
    ========================================================= */
-int explorer_context_items(ExtendedAction *out, int max, const char *path,
-                           void *ctx) {
-  (void)ctx;
-  (void)max;
-  (void)path;
-  out[0] = {"Properties", nullptr};
-  out[1] = {"Open in Terminal", nullptr};
-  return 2;
+void launch_explorer_home() {
+  launch_explorer("/home/user");
 }
 
-void launch_explorer() {
-  serial_log("GUI: Launching File Explorer...");
-  explorer_init();
+void launch_explorer(const char *start_path) {
+  ExplorerState *es = alloc_explorer_state();
+  if (!es) return;
+
+  if (start_path) {
+    strcpy(es->cwd, start_path);
+  }
+
+  explorer_load_directory_ex(es, es->cwd);
+
   Window *w = create_window(200, 120, 520, 360, "File Explorer",
                             &ThemeEngine::explorer_theme, explorer_draw,
                             explorer_click);
+  w->app_data = es;
   w->wants_keyboard = true;
   w->key = explorer_key;
   w->context_provider = {nullptr, explorer_context_items};
@@ -2534,6 +2266,13 @@ void terminal_key(Window *w, int key, int state) {
 }
 
 } // namespace TerminalSystem
+
+// launch_browser and launch_dillo moved up
+
+void launch_net_test() {
+  serial_log("GUI: Launching NetTest...");
+  sys_spawn("/C/NETTEST.ELF", nullptr);
+}
 
 void launch_terminal() {
   serial_log("GUI: Launching Terminal...");
@@ -3025,18 +2764,7 @@ void launch_calculator() {
     w->key = Calculator::calc_key;
   }
 }
-// Launch Notepad
-// Launch Notepad
-void launch_notepad() {
-  serial_log("GUI: Launching Notepad...");
-  // Files are injected into root directory by inject_wallpaper.py
-  // Case sensitivity or 8.3 format might be enforced by VFS
-  int ret = sys_spawn("/NOTEPAD.ELF", nullptr);
-  if (ret < 0) {
-    serial_log("GUI: Failed to launch /NOTEPAD.ELF, trying lowercase...");
-    sys_spawn("/notepad.elf", nullptr);
-  }
-}
+// Notepad and office apps removed
 
 // Include socket definitions
 extern "C" {
@@ -3294,7 +3022,8 @@ extern "C" void gui_main() {
   while (true) {
     Input::poll();
     WindowServer::poll();
-    net_poll();
+    // net_poll() is now handled exclusively by the net_thread to avoid races
+    schedule();
 
     // Fix 4: Keyboard Focus Contract
     int k, ks;
