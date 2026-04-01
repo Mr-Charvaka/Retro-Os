@@ -150,6 +150,7 @@ void init_font8x8() {
 
 #define FONT_W 9
 #define FONT_H 16
+static const char *DEFAULT_NOTE_PATH = "/home/user/Documents/note.txt";
 
 // ---------------------------------------------
 // Text Buffer
@@ -242,41 +243,59 @@ struct TextBuffer {
     s = n;
   }
 
-  void load_file(const char *path) {
+  bool load_file(const char *path) {
     int fd = OS::Syscall::open(path, O_RDONLY);
     if (fd < 0)
-      return;
+      return false;
 
     clear();
     char *buf = new char[32768];
     int n = OS::Syscall::read(fd, buf, 32768);
     OS::Syscall::close(fd);
 
+    if (n < 0) {
+      delete[] buf;
+      return false;
+    }
+
     if (n > 0) {
       for (int i = 0; i < n; i++) {
         if (buf[i] == '\n') {
           add_line("");
-        } else if (buf[i] != '\r') {
+        } else if (buf[i] == '\r') {
+          // ignore
+        } else if ((buf[i] >= 32 && buf[i] <= 126) || buf[i] == '\t') {
           append_char(lines[line_count - 1], buf[i]);
         }
       }
     }
     delete[] buf;
     dirty = false;
+    return true;
   }
 
-  void save_file(const char *path) {
+  bool save_file(const char *path) {
     int fd = OS::Syscall::open(path, O_CREAT | O_WRONLY | O_TRUNC);
     if (fd < 0)
-      return;
+      return false;
 
     for (int i = 0; i < line_count; i++) {
-      OS::Syscall::write(fd, lines[i], my_strlen(lines[i]));
-      if (i < line_count - 1)
-        OS::Syscall::write(fd, "\n", 1);
+      int len = my_strlen(lines[i]);
+      int w = OS::Syscall::write(fd, lines[i], len);
+      if (w != len) {
+        OS::Syscall::close(fd);
+        return false;
+      }
+      if (i < line_count - 1) {
+        if (OS::Syscall::write(fd, "\n", 1) != 1) {
+          OS::Syscall::close(fd);
+          return false;
+        }
+      }
     }
     OS::Syscall::close(fd);
     dirty = false;
+    return true;
   }
 
   char *concat(const char *s1, const char *s2) {
@@ -370,7 +389,7 @@ class NotepadApp {
 public:
   NotepadApp() : ipc(nullptr), width(600), height(400), active_menu(MENU_NONE) {
     my_strcpy(title, "Notepad");
-    current_path[0] = 0;
+    my_strcpy(current_path, DEFAULT_NOTE_PATH);
     status[0] = 0;
   }
   ~NotepadApp() {
@@ -385,6 +404,24 @@ public:
     if (!ipc->create_window(title, width, height))
       return false;
     return true;
+  }
+
+  bool open_path(const char *path) {
+    if (!path || !path[0])
+      return false;
+    my_strcpy(current_path, path);
+    if (buffer.load_file(path)) {
+      // Place cursor at end of loaded content for immediate editing
+      buffer.cursor_row = buffer.line_count - 1;
+      if (buffer.cursor_row < 0)
+        buffer.cursor_row = 0;
+      buffer.cursor_col = my_strlen(buffer.lines[buffer.cursor_row]);
+      my_strcpy(status, "File Opened");
+      return true;
+    }
+    buffer.clear();
+    my_strcpy(status, "New File");
+    return false;
   }
 
   void draw_text(int x, int y, const char *txt, uint32_t color) {
@@ -423,7 +460,7 @@ public:
     if (current_path[0])
       draw_text(200, 4, current_path, 0xFF666666);
     if (status[0])
-      draw_text(width - 150, 4, status, 0xFF008800);
+      draw_text(width - 95, 4, status, 0xFF008800);
 
     // Separator
     ipc->fill_rect(0, 24, width, 1, 0xFF888888);
@@ -488,37 +525,89 @@ public:
       return;
     }
 
-    if (active_menu == MENU_FILE && x >= 10 && x <= 126) {
-      int item = (y - 24) / 20;
-      if (item == 0) { // New
-        buffer.clear();
-        current_path[0] = 0;
-        my_strcpy(status, "New Doc Created");
-        active_menu = MENU_NONE;
-      } else if (item == 1) {                       // Open
-        buffer.load_file("/home/user/Welcome.txt"); // Test open
-        my_strcpy(current_path, "/home/user/Welcome.txt");
-        my_strcpy(status, "File Opened");
-        active_menu = MENU_NONE;
-      } else if (item == 2) { // Save
-        if (!current_path[0])
-          my_strcpy(current_path, "draft.txt");
-        buffer.save_file(current_path);
-        my_strcpy(status, "Saved!");
-        active_menu = MENU_NONE;
-      } else if (item == 3) {
-        OS::Syscall::exit(0);
+    if (active_menu == MENU_FILE) {
+      // Match exact drawn menu geometry: x=[10..126], y=[26..106)
+      if (x >= 10 && x <= 126 && y >= 26 && y < 106) {
+        int item = (y - 26) / 20;
+        if (item == 0) { // New
+          buffer.clear();
+          my_strcpy(current_path, DEFAULT_NOTE_PATH);
+          my_strcpy(status, "New Doc Created");
+          active_menu = MENU_NONE;
+          render();
+          return;
+        } else if (item == 1) { // Open
+          if (!current_path[0])
+            my_strcpy(current_path, DEFAULT_NOTE_PATH);
+          open_path(current_path);
+          active_menu = MENU_NONE;
+          render();
+          return;
+        } else if (item == 2) { // Save
+          if (!current_path[0])
+            my_strcpy(current_path, DEFAULT_NOTE_PATH);
+          if (buffer.save_file(current_path))
+            my_strcpy(status, "Saved!");
+          else
+            my_strcpy(status, "Save Failed");
+          active_menu = MENU_NONE;
+          render();
+          return;
+        } else if (item == 3) { // Exit
+          active_menu = MENU_NONE;
+          render();
+          if (buffer.dirty) {
+            if (!current_path[0])
+              my_strcpy(current_path, DEFAULT_NOTE_PATH);
+            buffer.save_file(current_path);
+          }
+          ipc->close_window(); // same encoding as red X button
+          OS::Syscall::exit(0);
+          return;
+        }
       }
+
+      // Clicked while File menu is open but not on a valid item -> close menu
+      active_menu = MENU_NONE;
       render();
-    } else if (active_menu == MENU_EDIT && x >= 60 && x <= 176) {
-      if ((y - 24) / 20 == 0) {
+      return;
+    } else if (active_menu == MENU_EDIT) {
+      // Match exact drawn edit menu geometry: x=[60..176], y=[26..46)
+      if (x >= 60 && x <= 176 && y >= 26 && y < 46) {
         buffer.clear();
         my_strcpy(status, "Cleared");
       }
       active_menu = MENU_NONE;
       render();
+      return;
     } else {
       active_menu = MENU_NONE;
+
+      // Click in editor area -> move cursor to clicked text position
+      int start_y = 30;
+      if (y >= start_y && buffer.line_count > 0) {
+        int row_in_view = (y - start_y) / FONT_H;
+        if (row_in_view < 0)
+          row_in_view = 0;
+
+        int target_row = buffer.scroll_y + row_in_view;
+        if (target_row < 0)
+          target_row = 0;
+        if (target_row >= buffer.line_count)
+          target_row = buffer.line_count - 1;
+
+        int target_col = (x - 4) / FONT_W;
+        if (target_col < 0)
+          target_col = 0;
+
+        int line_len = my_strlen(buffer.lines[target_row]);
+        if (target_col > line_len)
+          target_col = line_len;
+
+        buffer.cursor_row = target_row;
+        buffer.cursor_col = target_col;
+      }
+
       render();
     }
   }
@@ -531,17 +620,60 @@ public:
         if (msg.type == OS::MSG_GFX_KEY_EVENT) {
           char k = msg.data.key.key;
           my_strcpy(status, ""); // Clear status on type
-          if (k == '\b')
-            buffer.backspace();
+          bool edited = false;
+
+          // Arrow keys from keyboard driver mapping:
+          // 17=Up, 18=Down, 19=Left, 20=Right
+          if (k == 19) {
+            if (buffer.cursor_col > 0) {
+              buffer.cursor_col--;
+            } else if (buffer.cursor_row > 0) {
+              buffer.cursor_row--;
+              buffer.cursor_col = my_strlen(buffer.lines[buffer.cursor_row]);
+            }
+          } else if (k == 20) {
+            int len = my_strlen(buffer.lines[buffer.cursor_row]);
+            if (buffer.cursor_col < len) {
+              buffer.cursor_col++;
+            } else if (buffer.cursor_row + 1 < buffer.line_count) {
+              buffer.cursor_row++;
+              buffer.cursor_col = 0;
+            }
+          } else if (k == 17) {
+            if (buffer.cursor_row > 0)
+              buffer.cursor_row--;
+            int len = my_strlen(buffer.lines[buffer.cursor_row]);
+            if (buffer.cursor_col > len)
+              buffer.cursor_col = len;
+          } else if (k == 18) {
+            if (buffer.cursor_row + 1 < buffer.line_count)
+              buffer.cursor_row++;
+            int len = my_strlen(buffer.lines[buffer.cursor_row]);
+            if (buffer.cursor_col > len)
+              buffer.cursor_col = len;
+          } else if (k == '\b')
+            buffer.backspace(), edited = true;
           else if (k == '\n' || k == '\r')
-            buffer.newline();
-          else if (k == 19) { // Ctrl-S
+            buffer.newline(), edited = true;
+          else if (k == 14) { // F4 quick-save
             if (!current_path[0])
-              my_strcpy(current_path, "draft.txt");
-            buffer.save_file(current_path);
-            my_strcpy(status, "Saved!");
+              my_strcpy(current_path, DEFAULT_NOTE_PATH);
+            if (buffer.save_file(current_path))
+              my_strcpy(status, "Saved!");
+            else
+              my_strcpy(status, "Save Failed");
           } else if (k >= 32 && k <= 126)
-            buffer.insert_char(k);
+            buffer.insert_char(k), edited = true;
+
+          // Autosave after edits to avoid data loss on close/crash.
+          if (edited) {
+            if (!current_path[0])
+              my_strcpy(current_path, DEFAULT_NOTE_PATH);
+            if (buffer.save_file(current_path))
+              my_strcpy(status, "Saved!");
+            else
+              my_strcpy(status, "Save Failed");
+          }
           render();
         } else if (msg.type == OS::MSG_GFX_MOUSE_EVENT) {
           handle_click(msg.data.mouse.x, msg.data.mouse.y);
@@ -551,10 +683,13 @@ public:
   }
 };
 
-extern "C" void _start() {
+extern "C" void _start(int argc, char **argv) {
   init_font8x8();
   NotepadApp app;
   if (app.init()) {
+    if (argc > 1 && argv && argv[1]) {
+      app.open_path(argv[1]);
+    }
     app.run();
   }
   OS::Syscall::exit(0);

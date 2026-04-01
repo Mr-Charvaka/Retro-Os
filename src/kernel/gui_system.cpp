@@ -80,6 +80,7 @@ extern "C" void explorer_open_item(int index);
 extern "C" void explorer_double_click(int index);
 extern "C" void explorer_create_folder(const char *name);
 extern "C" void explorer_context_action(int index, int act);
+extern "C" const char *explorer_get_cwd();
 }
 
 struct Rect {
@@ -620,7 +621,12 @@ void show_context_menu(int x, int y, ContextTarget target, const char *path,
     add_context_item("Undo", ACT_UNDO);
     add_context_item("Redo", ACT_REDO);
     add_context_item("New Folder", ACT_NEW_FOLDER);
+    add_context_item("New Text File", ACT_NEW_FILE);
     add_context_item("Open Terminal", ACT_OPEN_TERMINAL);
+  } else if (target == TARGET_EMPTY) {
+    add_context_item("New Folder", ACT_NEW_FOLDER);
+    add_context_item("New Text File", ACT_NEW_FILE);
+    add_context_item("Refresh", ACT_REFRESH);
   } else {
     add_context_item("Open", ACT_OPEN);
     add_context_item("Select", ACT_SELECT);
@@ -705,6 +711,8 @@ void context_click(int index) {
       serial_log(intent.path);
       sys_context_execute(&intent);
       DesktopSystem::refresh();
+      // Also reload file explorer if it's browsing the affected directory
+      explorer_load_directory(explorer_get_cwd());
     }
   }
   g_ctx_menu.visible = false;
@@ -1262,7 +1270,15 @@ void handle_desktop_input() {
               explorer_load_directory(full);
               launch_explorer();
             } else {
-              sys_spawn(full, nullptr);
+              int len = strlen(full);
+              if (len > 4 &&
+                  (strcmp(full + len - 4, ".txt") == 0 ||
+                   strcmp(full + len - 4, ".TXT") == 0)) {
+                char *argv[] = {(char *)"NOTEPAD.ELF", full, nullptr};
+                sys_spawn("NOTEPAD.ELF", argv);
+              } else {
+                sys_spawn(full, nullptr);
+              }
             }
           }
           dragging_icon_index = -1;
@@ -1767,7 +1783,15 @@ void open_item(const char *path) {
   if (sys_is_dir(path)) {
     explorer_load_directory(path);
   } else {
-    sys_spawn(path, nullptr);
+    int len = strlen(path);
+    if (len > 4 &&
+        (strcmp(path + len - 4, ".txt") == 0 ||
+         strcmp(path + len - 4, ".TXT") == 0)) {
+      char *argv[] = {(char *)"NOTEPAD.ELF", (char *)path, nullptr};
+      sys_spawn("NOTEPAD.ELF", argv);
+    } else {
+      sys_spawn(path, nullptr);
+    }
   }
 }
 
@@ -2017,6 +2041,7 @@ void on_right_click(int x, int y) {
       const char *path = "/";
 
       if (w->draw == (DrawFn)explorer_draw) {
+        path = explorer_get_cwd(); // default to current directory
         int idx = explorer_hit_test(w, x, y);
         if (idx >= 0 && idx < item_count) {
           target = (items[idx].type == 2) ? TARGET_FOLDER : TARGET_FILE;
@@ -3093,6 +3118,7 @@ struct msg_gfx_mouse_event_t {
 struct msg_gfx_key_event_t {
   int window_id;
   char key;
+  int scancode;
 };
 
 struct gfx_msg_t {
@@ -3113,6 +3139,7 @@ void ipc_window_key_callback(Window *w, int key, int scancode) {
     msg.type = 5; // MSG_GFX_KEY_EVENT
     msg.data.key.window_id = w->id;
     msg.data.key.key = (char)key;
+    msg.data.key.scancode = scancode;
     k_write(w->client_fd, &msg, sizeof(msg));
   }
 }
@@ -3178,23 +3205,26 @@ void handle_client_setup(int fd) {
   }
 }
 
-void handle_client_msg(int fd) {
+int handle_client_msg(int fd) {
   gfx_msg_t msg;
   int n = k_read(fd, &msg, sizeof(gfx_msg_t));
   if (n > 0) {
     if (msg.type == 3) { // MSG_GFX_INVALIDATE_RECT
-      // Update the window!
-      // We need to find the window.
-      // Since we don't have a map, let's search windows
       int wid = msg.data.invalidate.window_id;
-      // Iterate all windows
       for (int d = 0; d < 1; d++) {
         for (int i = 0; i < win_count[d]; i++) {
           if (windows[d][i].alive && windows[d][i].id == wid) {
-            // Refresh it!
-            // Since it has backbuffer, next draw_window loop will pick it up.
-            // But checking "dirty" flags might be optimized later.
-            // For now, just ensuring we read the msg clears the pipe.
+            break;
+          }
+        }
+      }
+    } else if (msg.type == 6) { // MSG_GFX_CLOSE_WINDOW — same as red X button
+      for (int d = 0; d < MAX_DESKTOPS; d++) {
+        for (int i = 0; i < win_count[d]; i++) {
+          if (windows[d][i].alive && windows[d][i].client_fd == fd) {
+            windows[d][i].fade.target = 0.0f;
+            windows[d][i].alive = false;
+            serial_log("WS: Close window via Exit menu (MSG_GFX_CLOSE_WINDOW)");
             break;
           }
         }
@@ -3202,6 +3232,7 @@ void handle_client_msg(int fd) {
     }
     // Handle other messages if needed
   }
+  return n;
 }
 
 void init() {
@@ -3259,7 +3290,21 @@ void poll() {
     int fd = client_fds[i];
     if (fd != -1) {
       if (socket_can_read(fd)) {
-        handle_client_msg(fd);
+        int n = handle_client_msg(fd);
+        if (n <= 0) {
+          // Client disconnected — kill its window and free the slot
+          for (int d = 0; d < MAX_DESKTOPS; d++) {
+            for (int j = 0; j < win_count[d]; j++) {
+              if (windows[d][j].alive && windows[d][j].client_fd == fd) {
+                windows[d][j].alive = false;
+              }
+            }
+          }
+          sys_close(fd);
+          client_fds[i] = -1;
+          client_count--;
+          serial_log("WS: Client disconnected, window closed.");
+        }
       }
     }
   }
