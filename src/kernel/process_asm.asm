@@ -1,6 +1,7 @@
 [BITS 32]
 global switch_task
 global fork_child_return
+global user_mode_entry_asm
 
 ; Fork child return stub - called when a forked child is first scheduled
 ; The child's stack has a registers_t frame ready for iret
@@ -24,6 +25,46 @@ fork_child_return:
     add esp, 8
     
     ; Return to user mode
+    iret
+
+; user_mode_entry_asm(uint32_t entry, uint32_t utop)
+; This function is called from the kernel to switch to user mode.
+; It follows the same calling convention as a normal C function.
+user_mode_entry_asm:
+    cli
+    ; [esp+0] = retaddr
+    ; [esp+4] = entry
+    ; [esp+8] = stack (utop)
+    
+    mov eax, [esp + 4]    ; entry
+    mov edx, [esp + 8]    ; user stack
+
+    ; Segments
+    mov bx, 0x23
+    mov ds, bx
+    mov es, bx
+    mov fs, bx
+    mov gs, bx
+
+    ; Build IRET frame
+    push 0x23             ; SS
+    push edx              ; ESP
+    pushfd                ; EFLAGS
+    pop ecx
+    or ecx, 0x200         ; Enable interrupts (IF)
+    push ecx
+    push 0x1B             ; CS
+    push eax              ; EIP
+
+    ; Zero registers for safety
+    xor eax, eax
+    xor ebx, ebx
+    xor ecx, ecx
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    xor ebp, ebp
+
     iret
 
 ; void switch_task(uint32_t *old_esp, uint32_t new_esp, uint32_t new_cr3);

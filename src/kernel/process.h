@@ -4,6 +4,7 @@
 #include "../include/isr.h"
 #include "../include/signal.h"
 #include "../include/types.h"
+#include "apic.h"
 #include "../include/vfs.h"
 #include "paging.h"
 
@@ -35,7 +36,7 @@ typedef struct process {
   struct process *parent;    // Parent process
   uint32_t esp;              // Stack Pointer (Kernel Stack)
   uint32_t kernel_stack_top; // Top of kernel stack for TSS
-  uint32_t *page_directory;  // Page Directory (Physical Address)
+  uintptr_t page_directory;  // Page Directory (Physical Address)
   uint32_t entry_point;      // User mode entry point
   uint32_t user_stack_top;   // Top of user stack
   uint32_t heap_end;         // Current program break (end of heap)
@@ -82,6 +83,7 @@ typedef struct process {
   } *unveils;
 
   struct process *next; // Next process in list
+  int pinned_cpu;       // SMP: -1 = any, 0-N = specific core
 } process_t;
 
 // Pledge definitions
@@ -94,17 +96,20 @@ typedef struct process {
 #define PLEDGE_INET 0x40 // Network
 #define PLEDGE_ALL 0xFFFFFFFF
 
-extern process_t *current_process;
-extern process_t *ready_queue;
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void init_multitasking();
-void create_kernel_thread(void (*fn)());
-void create_user_process(const char *filename, char *const argv[]);
+extern process_t *current_processes[MAX_CPUS];
+#define current_process (current_processes[get_cpu_index()])
+extern process_t *ready_queue;
+
+void init_multitasking(uint32_t pd_phys);
+void init_ap_scheduling();
+process_t *create_kernel_thread(void (*fn)());
 void schedule();
+extern "C" void kernel_yield();
+int create_user_process(const char *filename, char *const argv[]);
 int get_pid();
 void enter_user_mode();
 int fork_process(registers_t *regs);
@@ -124,6 +129,39 @@ void sys__exit(int status);
 
 // Alarm timer
 uint32_t sys_alarm(uint32_t seconds);
+
+// Atomic and Spinlock helpers for SMP
+static inline int atomic_cas(volatile int *ptr, int expected, int desired) {
+  int result;
+  asm volatile("lock cmpxchgl %2, %1"
+               : "=a"(result), "+m"(*ptr)
+               : "r"(desired), "0"(expected)
+               : "memory");
+  return result == expected;
+}
+
+static inline void spinlock_lock(volatile int *lock) {
+  while (!atomic_cas(lock, 0, 1)) {
+    asm volatile("pause");
+  }
+}
+
+static inline void spinlock_unlock(volatile int *lock) {
+  *lock = 0;
+}
+
+// IRQ-safe variants
+static inline uint32_t spinlock_lock_irq(volatile int *lock) {
+    uint32_t flags;
+    asm volatile("pushf; cli; pop %0" : "=r"(flags));
+    spinlock_lock(lock);
+    return flags;
+}
+
+static inline void spinlock_unlock_irq(volatile int *lock, uint32_t flags) {
+    spinlock_unlock(lock);
+    asm volatile("push %0; popf" : : "r"(flags));
+}
 
 // Check and deliver alarms (called from timer)
 void check_process_alarms(void);
