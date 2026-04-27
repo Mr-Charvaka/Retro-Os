@@ -30,6 +30,7 @@ static ReassemblySlot reassembly_table[MAX_REASSEMBLY_SLOTS];
 extern "C" uint32_t timer_now_ms(void);
 extern "C" void* kmalloc(uint32_t);
 extern "C" void kfree(void*);
+extern "C" void dns_poll_callbacks(void); // Fix #4: drive async DNS from net tick
 
 // Gateway info - CRITICAL for routing
 static u8 gateway_mac[6] = {0xFF, 0xFF, 0xFF,
@@ -391,6 +392,9 @@ extern "C" void net_rx_handler(u8 *packet, u16 len) {
 // ============== Polling ==============
 
 extern "C" void net_poll(void) {
+  // ── Async DNS: drive pending callbacks (Fix #4) ──────────────────────────
+  dns_poll_callbacks();
+
   // Check for timed out reassembly slots
   static u32 last_cleanup = 0;
   u32 now = timer_now_ms();
