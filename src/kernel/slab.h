@@ -11,6 +11,14 @@
 
 void slab_init();
 void *slab_alloc(uint32_t size);
-int slab_free(void *ptr); // Returns 1 if handled, 0 if not (passed to kfree)
+int slab_free(void *ptr);
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern int slab_is_initialized;
+#ifdef __cplusplus
+}
+#endif
 
 #endif

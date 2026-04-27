@@ -1,9 +1,10 @@
-#include "Contracts.h"
+#include "../include/Contracts.h"
 #include "../drivers/serial.h"
 #include "heap.h"
 #include "process.h"
-#include "string.h"
-#include "vfs.h"
+#include "../include/string.h"
+#include "../include/vfs.h"
+#include "apic.h"
 
 extern uint32_t next_pid;
 
@@ -15,6 +16,7 @@ void kernel_panic(const char *reason) {
   serial_log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
   serial_log(reason);
   serial_log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+  smp_halt_others();
   asm volatile("cli");
   while (true) {
     asm volatile("hlt");

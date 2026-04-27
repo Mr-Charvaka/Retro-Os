@@ -11,6 +11,8 @@ static int mouse_x = 512;
 static int mouse_y = 384;
 static uint8_t mouse_btn = 0;
 
+extern volatile uint32_t g_smp_ready;
+
 extern "C" void get_mouse_state(int *x, int *y, uint8_t *btn) {
   *x = mouse_x;
   *y = mouse_y;
@@ -20,15 +22,15 @@ extern "C" void get_mouse_state(int *x, int *y, uint8_t *btn) {
 void mouse_wait(uint8_t type) {
   uint32_t _time_out = 100000;
   if (type == 0) {
-    while (_time_out--) { // Data
-      if ((inb(0x64) & 1) == 1) {
+    while (_time_out--) { // Wait for Data
+      if ((inb(0x64) & 0x01) == 1) {
         return;
       }
     }
     return;
   } else {
-    while (_time_out--) { // Signal
-      if ((inb(0x64) & 2) == 0) {
+    while (_time_out--) { // Wait for Signal
+      if ((inb(0x64) & 0x02) == 0) {
         return;
       }
     }
@@ -55,22 +57,33 @@ uint8_t mouse_read() {
 
 void mouse_callback(registers_t *regs) {
   uint8_t status = inb(0x64);
-  if (!(status & 0x21)) { // Check bit 0 (data ready) and bit 5 (mouse data)
+  
+  if (g_smp_ready) {
+      if (!(status & 0x01)) return; // Wait until hardware buffer actually has data
+  }
+
+  // Debug Heartbeat: shows hardware interrupts are reaching Core 0
+  // if (tick % 100 == 0) serial_log_hex(".", tick);
+
+  uint8_t data = inb(0x60);
+  
+  // Now check if it's actually mouse data (Bit 5 of status)
+  if (!(status & 0x20)) {
     return;
   }
 
-  uint8_t data = inb(0x60);
-  if (!(status & 0x20)) {
-    // Not mouse data, might be keyboard?
-    // Usually status register bit 5 indicates mouse
-    return;
+  // ==== PACKET SYNC CHECK ====
+  // PS/2 first byte is always: Y-ovf, X-ovf, Y-sign, X-sign, Always-1, Middle, Right, Left
+  // If bit 3 is not 1, we are out of sync.
+  if (mouse_cycle == 0 && !(data & 0x08)) {
+    return; // Drop byte and wait for a true start-of-packet
   }
 
   mouse_byte[mouse_cycle++] = data;
 
   if (mouse_cycle == 3) {
     mouse_cycle = 0;
-
+    
     // Packet ready
     uint8_t state = mouse_byte[0];
     int8_t x_rel = mouse_byte[1];
@@ -117,11 +130,24 @@ void init_mouse() {
   outb(0x60, status);
 
   // 3. Initialize Mouse Device
-  mouse_write(0xF6); // Set defaults
-  mouse_read();      // ACK
+  serial_log("MOUSE: Sending reset (0xF6)...");
+  int retries = 5;
+  while (retries--) {
+      mouse_write(0xF6); // Set defaults
+      uint8_t response = mouse_read();
+      serial_log_hex("MOUSE: Reset response: ", response);
+      if (response == 0xFA) break; // ACK
+  }
 
-  mouse_write(0xF4); // Enable data reporting
-  mouse_read();      // ACK
+  serial_log("MOUSE: Sending enable (0xF4)...");
+  retries = 5;
+  while (retries--) {
+      mouse_write(0xF4); // Enable data reporting
+      uint8_t response = mouse_read();
+      serial_log_hex("MOUSE: Enable response: ", response);
+      if (response == 0xFA) break; // ACK
+  }
+
 
   // 4. Register Handler
   register_interrupt_handler(44, mouse_callback); // IRQ12 = IDT 44

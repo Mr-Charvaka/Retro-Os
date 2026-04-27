@@ -75,3 +75,7 @@ void vga_print_color(const char *str, uint8_t color) {
   vga_print(str);
   default_color = old_color;
 }
+
+void vga_set_color(uint8_t color) {
+    default_color = color;
+}
