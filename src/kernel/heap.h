@@ -32,7 +32,9 @@ extern "C" {
 void init_kheap(uint32_t start, uint32_t end, uint32_t max);
 
 void *kmalloc_real(uint32_t size, int align, uint32_t *phys);
+void *kmalloc_internal(uint32_t size, int align, uint32_t *phys);
 void kfree(void *p);
+void kfree_internal(void *p);
 
 // Wrappers
 void *malloc(uint32_t size);

@@ -62,11 +62,19 @@ typedef struct tss_entry_struct tss_entry_t;
 extern "C" {
 #endif
 
+#define GDT_ENTRY_COUNT 10
+
 void init_gdt();
+void gdt_init_ap(int cpu_index, uint32_t kernel_stack);
 void set_kernel_stack(uint32_t stack);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif
+// Hardware-mandated size check — CPU reads TSS at fixed byte offsets.
+// If this fails, field offsets are wrong and ring transitions will crash.
+static_assert(sizeof(tss_entry_t) == 104, 
+    "FATAL: TSS struct must be exactly 104 bytes for x86 hardware!");
+
+#endif // GDT_H

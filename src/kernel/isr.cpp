@@ -13,8 +13,36 @@ void spurious_handler(registers_t *regs) {
   // Spurious interrupts don't need EOI or handling
 }
 
+// Phase 5: IPI Handlers
+extern "C" void lapic_eoi();
+extern "C" void schedule();
+
+void smp_tlb_shootdown_handler(registers_t *regs) {
+    // Force a TLB flush on this core
+    uint32_t cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    asm volatile("mov %0, %%cr3" : : "r"(cr3));
+    lapic_eoi();
+}
+
+void smp_preempt_handler(registers_t *regs) {
+    schedule();
+    lapic_eoi();
+}
+
+void smp_panic_handler(registers_t *regs) {
+    asm volatile("cli");
+    serial_log("IPI: CPU halted by panic signal.");
+    while(1) { asm volatile("hlt"); }
+}
+
 extern "C" void register_interrupt_handler(uint8_t n, isr_t handler) {
   interrupt_handlers[n] = handler;
+}
+
+void idt_load() {
+  extern idt_register_t idt_reg;
+  asm volatile("lidt (%0)" : : "r"(&idt_reg));
 }
 
 extern "C" void isr_install() {
@@ -52,14 +80,23 @@ extern "C" void isr_install() {
   set_idt_gate(31, (uint32_t)isr31);
 
   set_idt_gate_user(128, (uint32_t)isr128); // Syscall
+  set_idt_gate_ring2(129, (uint32_t)isr129); // Ring 2 Syscall
 
   set_idt_gate(255, (uint32_t)isr255); // Spurious APIC
   register_interrupt_handler(255, (isr_t)spurious_handler);
 
-  set_idt(); // Load IDT pointer
+  // SMP IPI Registration (Vectors 0xF0-0xF2)
+  set_idt_gate(0xF0, (uint32_t)isr240);
+  register_interrupt_handler(0xF0, (isr_t)smp_tlb_shootdown_handler);
 
-  extern idt_register_t idt_reg;
-  asm volatile("lidt (%0)" : : "r"(&idt_reg));
+  set_idt_gate(0xF1, (uint32_t)isr241);
+  register_interrupt_handler(0xF1, (isr_t)smp_preempt_handler);
+
+  set_idt_gate(0xF2, (uint32_t)isr242);
+  register_interrupt_handler(0xF2, (isr_t)smp_panic_handler);
+
+  set_idt(); // Load IDT pointer
+  idt_load();
 }
 
 const char *exception_messages[] = {"Division By Zero",
@@ -132,13 +169,27 @@ extern "C" void isr_handler(registers_t *regs) {
 
   // If user mode, try to handle signals (maybe we got a KILL)
   if ((regs->cs & 3) == 3) {
+    if (regs->int_no == 13) {
+      serial_log("[GPF] Ring 3 process faulted (Access Violation).");
+      serial_log("[GPF] This is EXPECTED if testing INT 0x81 security.");
+      serial_log_hex("  Error Code: ", regs->err_code);
+    }
     handle_signals(regs);
-    // If handle_signals returns, it means we handled it or ignored it.
-    // But if we had an exception, we shouldn't just retry instruction execution
-    // loop indefinitely? Unless the signal handler fixes it. For now, if it was
-    // an exception (0-31), and we are user, we probably want to kill process if
-    // signal didn't. But let's stick to the plan: call handle_signals.
     return;
+  }
+
+  // Ring 0/1/2 General Protection Fault Detail
+  if (regs->int_no == 13) {
+      serial_log("General Protection Fault (Ring 0-2)");
+      serial_log_hex("  Error Code: ", regs->err_code);
+      uint16_t sel = regs->err_code & 0xFFFC;
+      uint8_t  tbl = (regs->err_code >> 1) & 3; 
+      uint8_t  ext = regs->err_code & 1;
+      if (regs->err_code != 0) {
+          serial_log_hex("  Faulting Selector: ", sel);
+          serial_log(tbl == 0 ? "  Table: GDT" : tbl == 1 ? "  Table: IDT" : "  Table: LDT");
+          serial_log(ext ? "  External: Yes" : "  External: No");
+      }
   }
 
   // Hang if unhandled exception

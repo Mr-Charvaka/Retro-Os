@@ -19,6 +19,14 @@ void set_idt_gate_user(int n, uint32_t handler) {
   idt[n].flags = 0xEE; // DPL 11 (Ring 3 ke liye khula hai)
 }
 
+void set_idt_gate_ring2(int n, uint32_t handler) {
+  set_idt_gate(n, handler);
+  // flags: P=1 DPL=10 0 Type=1110 (32-bit Interrupt Gate)
+  // = 1_10_0_1110 = 0xCE
+  // DPL=2 (Binary 10). Ring 2 and Ring 0 can call this. Ring 3 CANNOT.
+  idt[n].flags = 0xCE;
+}
+
 void set_idt() {
   idt_reg.base = (uint32_t)&idt;
   idt_reg.limit = 256 * sizeof(idt_gate_t) - 1;

@@ -136,5 +136,58 @@ IRQ 47, 47
 
 ; System Call (INT 0x80)
 ISR_NOERRCODE 128
+; Ring 2 Brain Syscall (INT 0x81)
+global isr129
+isr129:
+    cli
+    push dword 0      ; dummy error code
+    push dword 129    ; interrupt number
+    jmp isr_common_stub
+
 ; Spurious APIC
 ISR_NOERRCODE 255
+
+; IPI Handlers
+ISR_NOERRCODE 240
+ISR_NOERRCODE 241
+ISR_NOERRCODE 242
+
+; =================================================================
+; ring2_iret_launch — Manual Transition to Ring 2
+; =================================================================
+; void ring2_iret_launch(uint32_t eip, uint32_t cs, uint32_t eflags, uint32_t esp, uint32_t ss);
+; Arguments are on Ring 0 stack:
+;   [esp+20] = ss
+;   [esp+16] = esp
+;   [esp+12] = eflags
+;   [esp+8]  = cs
+;   [esp+4]  = eip
+global ring2_iret_launch
+ring2_iret_launch:
+    ; 1. Load parameters into registers
+    mov eax, [esp + 4]   ; EIP
+    mov ebx, [esp + 8]   ; CS
+    mov ecx, [esp + 12]  ; EFLAGS
+    mov edx, [esp + 16]  ; ESP (Ring 2 stack)
+    mov esi, [esp + 20]  ; SS  (Ring 2 data)
+
+    ; 2. Disable interrupts during transition
+    cli
+
+    ; 3. Build IRET frame on current kernel stack
+    push esi             ; [ESP+16] SS
+    push edx             ; [ESP+12] ESP
+    push ecx             ; [ESP+8]  EFLAGS
+    push ebx             ; [ESP+4]  CS
+    push eax             ; [ESP+0]  EIP
+
+    ; 4. Set data segments to Ring 2 selectors BEFORE transition.
+    ; This ensures that as soon as we enter Ring 2, DS/ES etc are ready.
+    mov ax, si           ; SI has 0x3A
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+
+    ; 5. GO!
+    iret

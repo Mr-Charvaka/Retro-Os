@@ -4,9 +4,11 @@
 #include "memory.h"
 #include "paging.h" // For getting physical address if needed
 #include "slab.h"
+#include "buddy.h"
 
 kheap_t kheap;
-int slab_is_initialized = 0;
+#include "process.h" // For spinlock_lock/unlock
+volatile int heap_lock = 0;
 
 extern uint32_t *kernel_directory;
 
@@ -35,21 +37,24 @@ void init_kheap(uint32_t start, uint32_t end, uint32_t max) {
 #include "../include/io.h"
 
 void *kmalloc_real(uint32_t size, int align, uint32_t *phys) {
-  cli();
+  spinlock_lock(&heap_lock);
+  void *result = kmalloc_internal(size, align, phys);
+  spinlock_unlock(&heap_lock);
+  return result;
+}
 
+void *kmalloc_internal(uint32_t size, int align, uint32_t *phys) {
   // Pehle Slab Allocator check karo (agar chhota size hai)
   if (slab_is_initialized && size <= 2048 && !align) {
     void *ptr = slab_alloc(size);
     if (ptr) {
       if (phys)
         *phys = (uint32_t)ptr;
-      sti();
       return ptr;
     }
   }
 
   if (size == 0) {
-    sti();
     return 0;
   }
 
@@ -62,7 +67,6 @@ void *kmalloc_real(uint32_t size, int align, uint32_t *phys) {
   void *buddy_ptr = buddy_alloc(&kheap.buddy, required_size);
   if (!buddy_ptr) {
     serial_log("HEAP: OOM in Buddy Allocator!");
-    sti();
     return nullptr;
   }
 
@@ -85,20 +89,22 @@ void *kmalloc_real(uint32_t size, int align, uint32_t *phys) {
   if (phys)
     *phys = (uint32_t)data;
 
-  sti();
   return data;
 }
 
 void kfree(void *p) {
-  cli();
+  spinlock_lock(&heap_lock);
+  kfree_internal(p);
+  spinlock_unlock(&heap_lock);
+}
+
+void kfree_internal(void *p) {
   if (p == 0) {
-    sti();
     return;
   }
 
   // Try Slab Free
   if (slab_is_initialized && slab_free(p)) {
-    sti();
     return;
   }
 
@@ -106,14 +112,12 @@ void kfree(void *p) {
   uint32_t buddy_ptr = *((uint32_t *)((uintptr_t)p - 4));
   if (buddy_ptr < kheap.start_address || buddy_ptr > kheap.end_address) {
     serial_log("HEAP: Pointer galat hai - corruption lag raha hai!");
-    sti();
     return;
   }
 
   header_t *header = (header_t *)buddy_ptr;
   if (header->magic != 0xCAFEBABE) {
     serial_log("HEAP: Double free ya corruption, kuch toh gadbad hai!");
-    sti();
     return;
   }
 
@@ -122,9 +126,7 @@ void kfree(void *p) {
   header->magic = 0xBADB00B5;
 
   buddy_free(&kheap.buddy, header, size);
-  sti();
 }
 
 void *malloc(uint32_t size) { return kmalloc_real(size, 0, 0); }
-
 void free(void *p) { kfree(p); }

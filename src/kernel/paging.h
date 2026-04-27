@@ -4,7 +4,9 @@
 #include "../include/isr.h"
 #include "../include/types.h"
 
-#define KERNEL_VIRTUAL_BASE 0xC0000000
+#include "../include/memory_map.h"
+
+#define KERNEL_VIRTUAL_BASE KERNEL_VIRT_OFFSET
 #define KERNEL_PAGE_DIRECTORY_INDEX (KERNEL_VIRTUAL_BASE >> 22)
 
 #define PHYS_TO_VIRT(addr) ((uint32_t)(addr) + KERNEL_VIRTUAL_BASE)
@@ -13,8 +15,14 @@
 void init_paging();
 void switch_page_directory(uint32_t *new_dir);
 void paging_map(uint32_t phys, uint32_t virt, uint32_t flags);
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern uint32_t *kernel_directory;
 extern uint32_t *current_directory;
+#ifdef __cplusplus
+}
+#endif
 
 #define PTE_PRESENT 0x1
 #define PTE_RW 0x2
@@ -32,5 +40,6 @@ extern uint32_t *current_directory;
 #define PTE_NX 0 // Disabled for now
 
 uint32_t *paging_get_pte(uint32_t virt);
+extern "C" uint64_t paging_get_phys_generic(uint32_t virt);
 
 #endif
