@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <syscall.h>
 
-extern "C" void _start() {
+extern "C" int main(int argc, char** argv) {
   // 10.0.2.2 in Big-Endian is 0x0202000A
   uint32_t gateway = 0x0202000A;
 
@@ -15,10 +15,7 @@ extern "C" void _start() {
   syscall_print("Waiting for reply (check serial log)...\n");
 
   // Simple busy-wait or sleep if available
-  // 50 ticks = 1 second at 50Hz
-  uint32_t start = 0; // syscall_get_ticks() not available easily
-  for (volatile int i = 0; i < 50000000; i++)
-    ; // Busy wait
+  for (volatile int i = 0; i < 50000000; i++); // Busy wait
 
-  syscall_exit(0);
+  return 0;
 }

@@ -1,13 +1,6 @@
 #ifndef TYPES_H
 #define TYPES_H
 
-#ifdef _LIBC_SKIP_STANDARD_FUNCS
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <signal.h>
-#include <time.h>
-#else
-
 #include <stddef.h>
 #include <stdint.h>
 
@@ -46,8 +39,6 @@ struct stat {
   uint32_t st_blocks;
 };
 
-#endif // _LIBC_SKIP_STANDARD_FUNCS
-
 struct dirent {
   ino_t d_ino;
   off_t d_off;
@@ -56,18 +47,4 @@ struct dirent {
   char d_name[256];
 };
 
-#ifndef _LIBC_SKIP_STANDARD_FUNCS
-struct sigaction {
-  void (*sa_handler)(int);
-  uint32_t sa_mask;
-  int sa_flags;
-};
 #endif
-
-/* Opaque DIR structure */
-typedef struct {
-  int fd;
-  struct dirent de;
-} DIR;
-
-#endif // TYPES_H

@@ -19,7 +19,7 @@ static inline int syscall_tcp_test() {
   return result;
 }
 
-extern "C" void _start() {
+extern "C" int main(int argc, char** argv) {
   syscall_print("TCP Test: Starting connection test...\n");
   syscall_print("Attempting to connect to example.com (93.184.216.34:80)\n");
 
@@ -34,8 +34,7 @@ extern "C" void _start() {
 
   // Wait a bit for TCP handshake to complete
   syscall_print("Waiting for response (check serial log)...\n");
-  for (volatile int i = 0; i < 100000000; i++)
-    ;
+  for (volatile int i = 0; i < 100000000; i++);
 
-  syscall_exit(0);
+  return 0;
 }

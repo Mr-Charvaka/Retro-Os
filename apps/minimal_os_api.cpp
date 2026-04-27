@@ -134,5 +134,15 @@ bool os_fs_exists(const std::string &path) {
 }
 
 // ------------------- Process -------------------
-
 // Handled by Contracts.cpp
+
+// ------------------- Audio -------------------
+extern "C" void audio_play(void *buf, uint32_t len) {
+  int res;
+  asm volatile("int $0x80" : "=a"(res) : "a"(135), "b"(buf), "c"(len));
+}
+
+extern "C" void speaker_pcm(const uint8_t *samples, uint32_t len) {
+  int res;
+  asm volatile("int $0x80" : "=a"(res) : "a"(136), "b"(samples), "c"(len));
+}

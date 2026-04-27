@@ -3,7 +3,7 @@
 
 #include "include/os/syscalls.hpp"
 
-extern "C" void _start() {
+extern "C" int main(int argc, char** argv) {
   OS::Syscall::print("\n");
   OS::Syscall::print("========================================\n");
   OS::Syscall::print("  Hello, Aman!\n");
@@ -17,4 +17,5 @@ extern "C" void _start() {
   while (1) {
     OS::Syscall::sleep(1000);
   }
+  return 0;
 }

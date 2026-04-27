@@ -255,9 +255,9 @@ public:
   }
 };
 
-extern "C" void _start() {
+extern "C" int main(int argc, char** argv) {
   init_font8x8();
   Terminal terminal;
   terminal.run();
-  OS::Syscall::exit(0);
+  return 0;
 }

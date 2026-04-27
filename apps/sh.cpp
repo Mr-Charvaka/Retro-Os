@@ -1,115 +1,95 @@
-#include "include/libc.h"
-#include "include/stdio.h"
+#include "include/syscall.h"
 
-// Shell specific helpers
-void shell_print(const char *s) { fputs(s, stdout); }
+/* Minimalistic Shell using raw syscalls only */
 
-void print_prompt() {
-  char cwd[256];
-  getcwd(cwd, 256);
-  shell_print("retro@os:");
-  shell_print(cwd);
-  shell_print("$ ");
+// Simple strlen since we aren't using libc
+static int my_strlen(const char* s) {
+    int l = 0;
+    while (s && s[l]) l++;
+    return l;
 }
 
-int main() {
-  char cmd[256];
-  shell_print("\n\x1b[1;36mRetro-OS Shell v1.1.0\x1b[0m\n");
-  shell_print("Type 'help' for commands.\n\n");
-
-  while (1) {
-    print_prompt();
-
-    if (fgets(cmd, 256, stdin) == NULL) {
-      shell_print("\n");
-      break;
+// Simple strcmp
+static int my_strcmp(const char* s1, const char* s2) {
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
     }
+    return *(unsigned char*)s1 - *(unsigned char*)s2;
+}
 
-    // Remove trailing newline
-    int len = strlen(cmd);
-    if (len > 0 && cmd[len - 1] == '\n') {
-      cmd[len - 1] = 0;
-      len--;
+// Helper for print
+static void print(const char* msg) {
+    syscall_print(msg);
+}
+
+extern "C" int main(int argc, char** argv) {
+    char cmd[1024];
+    char* args[16];
+    char path[256];
+    
+    print("\n[SHELL] Interactive mode started (Zero-Libc)\n");
+    
+    while (1) {
+        print("Retro-OS> ");
+        
+        // Read prompt
+        int n = syscall_read(0, cmd, 1023);
+        if (n <= 0) continue;
+        
+        // Null terminate and strip newline
+        cmd[n] = 0;
+        if (n > 0 && cmd[n-1] == '\n') cmd[n-1] = 0;
+        if (n > 1 && cmd[n-2] == '\r') cmd[n-2] = 0; // Handle CRLF
+        
+        if (my_strlen(cmd) == 0) continue;
+        
+        // Simple command handling: 'exit'
+        if (my_strcmp(cmd, "exit") == 0) break;
+        
+        // Fork and Exec
+        int pid = syscall_fork();
+        if (pid == 0) {
+            // Child
+            // Simple path resolution (assume /C/)
+            if (cmd[0] != '/') {
+                path[0] = '/';
+                path[1] = 'C';
+                path[2] = '/';
+                int i = 0;
+                while (cmd[i]) {
+                    path[i+3] = cmd[i];
+                    i++;
+                }
+                path[i+3] = 0;
+            } else {
+                int i = 0;
+                while (cmd[i]) {
+                    path[i] = cmd[i];
+                    i++;
+                }
+                path[i] = 0;
+            }
+            
+            char* argv_child[] = {path, (char*)0};
+            char* env_child[] = {(char*)0};
+            
+            syscall_execve(path, argv_child, env_child);
+            
+            // If we are here, exec failed
+            print("sh: command not found: ");
+            print(cmd);
+            print("\n");
+            syscall_exit(1);
+        } else if (pid > 0) {
+            // Parent: Wait
+            int status;
+            syscall_wait(&status);
+        } else {
+            print("sh: fork failed\n");
+        }
     }
-
-    if (len == 0)
-      continue;
-
-    // Built-in commands
-    if (strcmp(cmd, "exit") == 0) {
-      break;
-    } else if (strcmp(cmd, "help") == 0) {
-      shell_print("Built-in commands: cd, help, exit, clear, pwd\n");
-      shell_print("External: ls, cat, hello, df, stat, rm, mkdir\n");
-      continue;
-    } else if (strcmp(cmd, "clear") == 0) {
-      shell_print("\x1b[2J\x1b[H");
-      continue;
-    } else if (strcmp(cmd, "pwd") == 0) {
-      char cwd[256];
-      getcwd(cwd, 256);
-      shell_print(cwd);
-      shell_print("\n");
-      continue;
-    } else if (strncmp(cmd, "cd ", 3) == 0) {
-      if (chdir(cmd + 3) < 0) {
-        shell_print("sh: cd: no such directory\n");
-      }
-      continue;
-    }
-
-    // External commands
-    int pid = fork();
-    if (pid == 0) {
-      // Child process
-      char path[256];
-      char *argv[2];
-
-      // Try absolute/relative path
-      if (cmd[0] == '/' || cmd[0] == '.') {
-        strcpy(path, cmd);
-      } else {
-        // Try /apps/ first
-        strcpy(path, "/apps/");
-        strcat(path, cmd);
-        if (strstr(path, ".elf") == 0)
-          strcat(path, ".elf");
-      }
-
-      argv[0] = path;
-      argv[1] = NULL;
-      execve(path, argv, NULL);
-
-      // Try /bin/
-      if (cmd[0] != '/' && cmd[0] != '.') {
-        strcpy(path, "/bin/");
-        strcat(path, cmd);
-        if (strstr(path, ".elf") == 0)
-          strcat(path, ".elf");
-        execve(path, argv, NULL);
-      }
-
-      // Try root /
-      if (cmd[0] != '/' && cmd[0] != '.') {
-        strcpy(path, "/");
-        strcat(path, cmd);
-        if (strstr(path, ".elf") == 0)
-          strcat(path, ".elf");
-        execve(path, argv, NULL);
-      }
-
-      shell_print("sh: command not found: ");
-      shell_print(cmd);
-      shell_print("\n");
-      exit(1);
-    } else if (pid > 0) {
-      // Parent process
-      int status;
-      wait(&status);
-    } else {
-      shell_print("sh: fork failed\n");
-    }
-  }
-
-  return 0;
+    
+    print("sh: exiting...\n");
+    return 0;
 }
