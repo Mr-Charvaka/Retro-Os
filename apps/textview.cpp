@@ -199,13 +199,13 @@ void render() {
 // ENTRY POINT
 // =====================
 
-extern "C" void _start(int argc, char **argv) {
+extern "C" int main(int argc, char **argv) {
   fb_init();
 
   if (argc < 2) {
     // Mock default if no arg for testing?
     // load_file("/home/user/Desktop/test.txt");
-    sys_exit(1);
+    return 1;
   } else {
     load_file(argv[1]);
   }
@@ -214,4 +214,5 @@ extern "C" void _start(int argc, char **argv) {
     render();
     // future: sys_yield() if available
   }
+  return 0;
 }

@@ -28,6 +28,8 @@ extern "C" {
 void sb16_init();
 void sb16_play_8bit(uint8_t *buffer, uint32_t length, uint16_t sample_rate);
 void sb16_play_16bit(int16_t *buffer, uint32_t length, uint16_t sample_rate);
+void sb16_write(uint8_t data);
+int32_t sys_audio_cstatus();
 
 #ifdef __cplusplus
 }

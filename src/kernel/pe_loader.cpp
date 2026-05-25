@@ -42,6 +42,19 @@ static uint32_t resolve_import(const char *dll, const char *func) {
   return 0;
 }
 
+static uint32_t rva_to_offset(IMAGE_NT_HEADERS32 *nt_hdr, uint32_t rva) {
+  IMAGE_SECTION_HEADER *section =
+      (IMAGE_SECTION_HEADER *)((uint8_t *)&nt_hdr->OptionalHeader +
+                               nt_hdr->FileHeader.SizeOfOptionalHeader);
+  for (int i = 0; i < nt_hdr->FileHeader.NumberOfSections; i++) {
+    if (rva >= section[i].VirtualAddress &&
+        rva < section[i].VirtualAddress + section[i].VirtualSize) {
+      return section[i].PointerToRawData + (rva - section[i].VirtualAddress);
+    }
+  }
+  return rva; // Fallback for headers
+}
+
 uint32_t load_pe(const char *filename, uint32_t *top_address) {
   serial_log("PE: Loading file via VFS...");
   serial_log(filename);
@@ -126,25 +139,29 @@ uint32_t load_pe(const char *filename, uint32_t *top_address) {
   if (nt_hdr->OptionalHeader.DataDirectory[1].Size > 0) {
     uint32_t import_rva =
         nt_hdr->OptionalHeader.DataDirectory[1].VirtualAddress;
+    uint32_t import_offset = rva_to_offset(nt_hdr, import_rva);
     IMAGE_IMPORT_DESCRIPTOR *import_desc =
-        (IMAGE_IMPORT_DESCRIPTOR *)(buffer + import_rva); // Simple map for demo
+        (IMAGE_IMPORT_DESCRIPTOR *)(buffer + import_offset);
 
     while (import_desc->Name != 0) {
-      const char *dll_name = (const char *)(buffer + import_desc->Name);
+      const char *dll_name =
+          (const char *)(buffer + rva_to_offset(nt_hdr, import_desc->Name));
       serial_log("PE: Resolving imports for ");
       serial_log(dll_name);
 
       // Thunk arrays
       uint32_t *thunk = (uint32_t *)(nt_hdr->OptionalHeader.ImageBase +
                                      import_desc->FirstThunk);
-      uint32_t *orig_thunk =
-          (uint32_t *)(buffer + (import_desc->OriginalFirstThunk
-                                     ? import_desc->OriginalFirstThunk
-                                     : import_desc->FirstThunk));
+
+      uint32_t lookup_rva = import_desc->OriginalFirstThunk
+                                ? import_desc->OriginalFirstThunk
+                                : import_desc->FirstThunk;
+      uint32_t *orig_thunk = (uint32_t *)(buffer + rva_to_offset(nt_hdr, lookup_rva));
 
       while (*orig_thunk != 0) {
         if (!(*orig_thunk & 0x80000000)) { // Import by name
-          const char *func_name = (const char *)(buffer + (*orig_thunk) + 2);
+          const char *func_name =
+              (const char *)(buffer + rva_to_offset(nt_hdr, *orig_thunk) + 2);
           uint32_t addr = resolve_import(dll_name, func_name);
           if (addr != 0) {
             *thunk = addr; // Replace IAT entry with our bridge

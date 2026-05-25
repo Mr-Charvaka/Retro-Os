@@ -52,6 +52,10 @@ extern void isr29();
 extern void isr30();
 extern void isr31();
 extern void isr128();
+extern void isr129();
+extern void isr240();
+extern void isr241();
+extern void isr242();
 extern void isr255();
 
 void isr_install();

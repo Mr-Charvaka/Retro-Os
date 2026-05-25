@@ -1,18 +1,18 @@
 #include "include/os/ipc.hpp"
 #include "include/os/syscalls.hpp"
 
-extern "C" void _start() {
+extern "C" int main(int argc, char** argv) {
   OS::Syscall::print("Hello App: Starting...\n");
 
   OS::IPCClient app;
   if (!app.connect()) {
     OS::Syscall::print("Hello App: Failed to connect to WindowServer.\n");
-    OS::Syscall::exit(1);
+    return 1;
   }
 
   if (!app.create_window("Hello C++", 300, 200)) {
     OS::Syscall::print("Hello App: Failed to create window.\n");
-    OS::Syscall::exit(1);
+    return 1;
   }
 
   // specific drawing
@@ -32,4 +32,5 @@ extern "C" void _start() {
     OS::Syscall::sleep(100);
     // Event loop placeholder
   }
+  return 0;
 }

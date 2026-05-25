@@ -1,7 +1,9 @@
 #include "include/libc.h"
 #include "include/stdio.h"
 
-int main(int argc, char *argv[]) {
+extern "C" void exit(int);
+
+extern "C" int main(int argc, char** argv) {
   if (argc < 2) {
     fputs("usage: mkdir <directory>\n", stdout);
     return 1;

@@ -1,0 +1,34 @@
+# Makefile for Retro-OS Applications using Newlib
+
+# Compiler and Flags
+CC := i686-elf-gcc
+CXX := i686-elf-g++
+LD := i686-elf-ld
+
+# Include Paths
+LIBC_INC := ../src/libc/newlib/newlib/libc/include
+KERNEL_INC := ../src/include
+APPS_INC := include
+
+CFLAGS := -m32 -ffreestanding -O2 -I$(LIBC_INC) -I$(KERNEL_INC) -I$(APPS_INC)
+CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions -std=c++20
+
+# Library Stubs
+STUBS_OBJ := ../src/libc/new_stubs.o
+
+# Targets
+APPS := libc_demo posix_test
+
+all: $(APPS)
+
+libc_demo: libc_demo.o $(STUBS_OBJ)
+	$(LD) -m elf_i386 -T linker.ld -o $@.elf $^
+
+posix_test: posix_test.o $(STUBS_OBJ)
+	$(LD) -m elf_i386 -T linker.ld -o $@.elf $^
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+clean:
+	rm -f *.o *.elf

@@ -25,6 +25,8 @@ typedef struct {
 // Functions
 void set_idt_gate(int n, uint32_t handler);
 void set_idt_gate_user(int n, uint32_t handler);
+void set_idt_gate_ring2(int n, uint32_t handler);
 void set_idt();
+void idt_load();
 
 #endif

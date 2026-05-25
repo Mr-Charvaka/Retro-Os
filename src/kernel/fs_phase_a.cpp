@@ -299,10 +299,15 @@ extern "C" int phase_create_in_dir(phase_inode *pdir, const char *name,
 }
 
 // 🔹 SECTION 10: PERSISTENCE (DISK SYNC)
-#include "../drivers/fat16.h"
+#include "../drivers/fat32.h"
+extern fat32_context_t *system_fat32_ctx;
 
-// Optimization: Disable sync during bootstrap
+// Optimization: Disable sync during bootstrap or bulk operations
 static bool g_phase_a_sync_enabled = true;
+
+extern "C" void phase_a_set_sync(bool enabled) {
+  g_phase_a_sync_enabled = enabled;
+}
 
 uint32_t phase_vfs_get_total_size() {
   return sizeof(phase_inode_table) + sizeof(phase_data_blocks) + 8;
@@ -325,20 +330,38 @@ extern "C" void phase_vfs_sync() {
   offset += 4;
   memcpy(buf + offset, &phase_block_count, 4);
 
-  // Create if not exists
-  fat16_entry_t e = fat16_find_file("TRUTH.DAT");
-  if (e.filename[0] == 0) {
-    fat16_create_file("TRUTH.DAT");
+  if (!system_fat32_ctx) {
+      serial_log("FS_PHASE_A: No FAT32 context, skipping sync.");
+      kfree(buf);
+      return;
   }
 
-  fat16_write_file("TRUTH.DAT", buf, total);
+  // Create if not exists
+  serial_log("FS_PHASE_A: Looking for TRUTH.DAT...");
+  fat32_entry_t e;
+  bool found = fat32_find_file(system_fat32_ctx, "TRUTH.DAT", &e);
+  
+  if (!found) {
+    serial_log("FS_PHASE_A: TRUTH.DAT not found, creating...");
+    fat32_create_file(system_fat32_ctx, "TRUTH.DAT");
+    // Refresh entry
+    fat32_find_file(system_fat32_ctx, "TRUTH.DAT", &e);
+  }
+
+  serial_log("FS_PHASE_A: Writing to TRUTH.DAT...");
+  fat32_write_file(system_fat32_ctx, "TRUTH.DAT", (uint8_t*)buf, total);
+  serial_log("FS_PHASE_A: Write complete.");
   kfree(buf);
-  serial_log("FS_PHASE_A: Synced to TRUTH.DAT");
+  serial_log("FS_PHASE_A: Synced to TRUTH.DAT (FAT32)");
 }
 
 extern "C" void phase_vfs_load() {
-  fat16_entry_t e = fat16_find_file("TRUTH.DAT");
-  if (e.filename[0] == 0) {
+  if (!system_fat32_ctx) return;
+
+  fat32_entry_t e;
+  bool found = fat32_find_file(system_fat32_ctx, "TRUTH.DAT", &e);
+  
+  if (!found) {
     serial_log("FS_PHASE_A: No TRUTH.DAT found, starting fresh.");
     return;
   }
@@ -348,16 +371,16 @@ extern "C" void phase_vfs_load() {
   if (!buf)
     return;
 
-  fat16_read_file(&e, buf);
+  fat32_read_file(system_fat32_ctx, &e, buf);
 
-  uint32_t offset = 0;
-  memcpy(phase_inode_table, buf + offset, sizeof(phase_inode_table));
-  offset += sizeof(phase_inode_table);
-  memcpy(phase_data_blocks, buf + offset, sizeof(phase_data_blocks));
-  offset += sizeof(phase_data_blocks);
-  memcpy(&phase_inode_count, buf + offset, 4);
-  offset += 4;
-  memcpy(&phase_block_count, buf + offset, 4);
+  uint32_t loffset = 0;
+  memcpy(phase_inode_table, buf + loffset, sizeof(phase_inode_table));
+  loffset += sizeof(phase_inode_table);
+  memcpy(phase_data_blocks, buf + loffset, sizeof(phase_data_blocks));
+  loffset += sizeof(phase_data_blocks);
+  memcpy(&phase_inode_count, buf + loffset, 4);
+  loffset += 4;
+  memcpy(&phase_block_count, buf + loffset, 4);
 
   kfree(buf);
   serial_log("FS_PHASE_A: Loaded persistent state from TRUTH.DAT");
@@ -412,11 +435,22 @@ extern "C" void fs_phase_a_bootstrap() {
   vfs_mkdir_phase_a("/home/user/Documents");
   vfs_mkdir_phase_a("/home/user/Downloads");
 
-  // System stuff
-  vfs_mkdir_phase_a("/system");
-  vfs_mkdir_phase_a("/system/.recycle");
+  // 3. Create Desktop Shortcuts (Always check if they exist)
+  const char* shortcuts[] = {
+    "/home/user/Desktop/Terminal.lnk",
+    "/home/user/Desktop/Explorer.lnk",
+    "/home/user/Desktop/Calculator.lnk",
+    "/home/user/Desktop/System Monitor.lnk",
+    "/home/user/Desktop/Browser.lnk"
+  };
 
-  // 3. Create Welcome File
+  for(int i = 0; i < 5; i++) {
+    if(!phase_vfs_resolve(shortcuts[i])) {
+      vfs_create_file_phase_a(shortcuts[i]);
+    }
+  }
+
+  // 4. Create Welcome File
   int id = vfs_create_file_phase_a("/home/user/Desktop/readme.txt");
   if (id >= 0) {
     phase_inode *f = &phase_inode_table[id];

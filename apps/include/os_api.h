@@ -9,6 +9,10 @@ extern "C" void gfx_clear(uint32_t color);
 extern "C" void gfx_rect(int x, int y, int w, int h, uint32_t color);
 extern "C" void gfx_text(int x, int y, const char *text, uint32_t color);
 
+// audio
+extern "C" void audio_play(void *buf, uint32_t len);
+extern "C" void speaker_pcm(const uint8_t *samples, uint32_t len);
+
 // input
 struct MouseState {
   int x, y;

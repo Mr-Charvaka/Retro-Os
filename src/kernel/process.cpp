@@ -14,9 +14,46 @@
 #include "shm.h"
 #include "vm.h"
 
-process_t *current_process = 0;
+process_t *current_processes[MAX_CPUS] = {0};
 process_t *ready_queue = 0;
 uint32_t next_pid = 1;
+
+// Global lock for all scheduler operations
+volatile int scheduler_lock = 0;
+
+// NEW: Core Online Bitmask
+// Bits 0-3 represent Core 0 through Core 3
+volatile uint32_t g_cores_online = 0x1; // BSP (Core 0) is online by default
+
+// Helper to check if interrupts are currently enabled on this core
+static inline int are_interrupts_enabled() {
+    uint32_t eflags;
+    asm volatile("pushf; pop %0" : "=r"(eflags));
+    return (eflags & 0x0200); // IF bit is 9 (0x200)
+}
+
+// =============================================================================
+// FIX #3 -- "The Blind Fork CWD"
+//
+// cwd_inherit() copies a CWD string only when it is well-formed (non-empty and
+// starts with '/').  If the parent's CWD is empty, relative, or otherwise
+// invalid it means the directory has been deleted or was never valid (ghost).
+// In that case the child process falls back to '/', preventing crashes from
+// relative file operations inside a ghost directory.
+// =============================================================================
+static void cwd_inherit(char *dst, const char *src) {
+  if (src && src[0] == '/') {
+    strncpy(dst, src, 255);
+    dst[255] = '\0';
+  } else {
+    if (src && src[0] != '\0') {
+      serial_log("PROC: CWD inheritance rejected -- parent CWD is not absolute:");
+      serial_log(src);
+    }
+    dst[0] = '/';
+    dst[1] = '\0';
+  }
+}
 
 extern "C" uint32_t
     stack_top; // Asli stack ki choti (kernel_entry.asm se aayi hai)
@@ -24,7 +61,7 @@ extern "C" void switch_task(uint32_t *old_esp, uint32_t new_esp,
                             uint32_t new_cr3);
 extern "C" void fork_child_return();
 
-void init_multitasking() {
+void init_multitasking(uint32_t pd_phys) {
   serial_log("SCHED: Multitasking shuru kar rahe hain...");
 
   current_process = (process_t *)kmalloc(sizeof(process_t));
@@ -32,14 +69,20 @@ void init_multitasking() {
   current_process->state = PROCESS_RUNNING;
   current_process->parent = 0;
   current_process->exit_code = 0;
-  current_process->page_directory =
-      (uint32_t *)VIRT_TO_PHYS(kernel_directory); // Directory set ho gayi
-  current_process->kernel_stack_top = (uint32_t)&stack_top;
+  current_process->pinned_cpu = 0; // BSP is always on CPU 0
+  
+  if (pd_phys != 0) {
+      current_process->page_directory = (uintptr_t)pd_phys;
+  } else {
+      current_process->page_directory = (uintptr_t)VIRT_TO_PHYS(kernel_directory);
+  }
+  current_process->kernel_stack_top = (uint32_t)(uintptr_t)&stack_top;
 
   for (int i = 0; i < MAX_PROCESS_FILES; i++)
     current_process->fd_table[i] = 0;
 
   current_process->priority = DEFAULT_PRIORITY;
+  current_process->tica_color = 0x0; // WHITE (Neutral)
   current_process->time_slice = DEFAULT_TIME_SLICE;
   current_process->time_remaining = DEFAULT_TIME_SLICE;
   current_process->sleep_until = 0;
@@ -49,19 +92,106 @@ void init_multitasking() {
   current_process->next = current_process;
   ready_queue = current_process;
 
+  // Setup Standard I/O (FD 0, 1, 2) for the first process
+  vfs_node_t *tty = vfs_resolve_path("/dev/tty0");
+  if (tty) {
+    file_description_t *desc = (file_description_t *)kmalloc(sizeof(file_description_t));
+    desc->node = tty;
+    desc->offset = 0;
+    desc->flags = 0x02; // O_RDWR
+    desc->ref_count = 3;
+    current_process->fd_table[0] = desc;
+    current_process->fd_table[1] = desc;
+    current_process->fd_table[2] = desc;
+    serial_log("SCHED: Standard I/O (0,1,2) hooked to /dev/tty0");
+  }
+
   serial_log("SCHED: Enabled.");
 }
 
-void create_kernel_thread(void (*fn)()) {
+extern "C" process_t *process_find(uint32_t pid) {
+    if (!ready_queue) return nullptr;
+    process_t *p = ready_queue;
+    do {
+        if (p->id == pid) return p;
+        p = p->next;
+    } while (p != ready_queue);
+    return nullptr;
+}
+
+extern "C" void tica_terminate_color(uint16_t color) {
+    if (!ready_queue) return;
+    process_t *p = ready_queue;
+    do {
+        if (p->tica_color == color) {
+            serial_log_hex("[HARDWARE] CC-Gate Termination of Domain ", color);
+            exit_process(-1); // Force exit
+            return;
+        }
+        p = p->next;
+    } while (p != ready_queue);
+}
+
+extern "C" bool g_pae_active;
+extern "C" uint32_t g_pdpt_phys_addr;
+
+void init_ap_scheduling() {
+    int cpu = get_cpu_index();
+    process_t *idle = (process_t *)kmalloc(sizeof(process_t));
+    memset(idle, 0, sizeof(process_t));
+    
+    idle->id = 0; // All idle tasks share PID 0
+    idle->state = PROCESS_RUNNING;
+    idle->pinned_cpu = cpu;
+    idle->priority = 139; // Lowest possible priority
+    idle->time_slice = DEFAULT_TIME_SLICE;
+    idle->time_remaining = DEFAULT_TIME_SLICE;
+    
+    if (g_pae_active) {
+        idle->page_directory = (uintptr_t)g_pdpt_phys_addr;
+    } else {
+        idle->page_directory = (uintptr_t)VIRT_TO_PHYS(kernel_directory);
+    }
+    
+    // We don't need a real stack for the switch-out, because we never switch back TO this dummy state
+    // but we need a valid kernel_stack_top for TSS later
+    idle->kernel_stack_top = (uint32_t)(uintptr_t)kmalloc(4096) + 4096;
+
+    current_process = idle;
+    
+    // Add to global list so schedule() can find it if needed (though it shouldn't pick idles)
+    spinlock_lock(&scheduler_lock);
+    idle->next = ready_queue->next;
+    ready_queue->next = idle;
+    spinlock_unlock(&scheduler_lock);
+    
+    serial_log_hex("SCHED: AP Multitasking ready for CPU ", cpu);
+}
+
+
+extern "C" void kernel_yield() {
+  if (current_process && current_process->state == PROCESS_RUNNING) {
+    current_process->time_remaining = 0;
+    schedule();
+  }
+}
+
+process_t *create_kernel_thread(void (*fn)()) {
   // Naya kernel thread banao
   process_t *new_proc = (process_t *)kmalloc(sizeof(process_t));
   new_proc->id = next_pid++;
   new_proc->state = PROCESS_READY;
   new_proc->parent = current_process;
   new_proc->exit_code = 0;
-  new_proc->page_directory = (uint32_t *)VIRT_TO_PHYS(kernel_directory);
+  
+  if (g_pae_active) {
+      new_proc->page_directory = (uintptr_t)g_pdpt_phys_addr;
+  } else {
+      new_proc->page_directory = (uintptr_t)VIRT_TO_PHYS(kernel_directory);
+  }
   new_proc->heap_end = 0;
   new_proc->pledges = PLEDGE_ALL;
+  new_proc->pinned_cpu = -1; // Any core by default
 
   new_proc->priority = DEFAULT_PRIORITY;
   new_proc->time_slice = DEFAULT_TIME_SLICE;
@@ -71,62 +201,71 @@ void create_kernel_thread(void (*fn)()) {
   uint32_t *stack = (uint32_t *)kmalloc(16384);
   uint32_t *top = stack + 4096;
 
-  *(--top) = (uint32_t)fn;
+  *(--top) = (uint32_t)(uintptr_t)fn;
   *(--top) = 0;
   *(--top) = 0;
   *(--top) = 0;
   *(--top) = 0;
   *(--top) = 0x0202;
 
-  new_proc->esp = (uint32_t)top;
-  new_proc->kernel_stack_top = (uint32_t)stack + 4096;
+  new_proc->esp = (uint32_t)(uintptr_t)top;
+  new_proc->kernel_stack_top = (uint32_t)(uintptr_t)stack + 16384; 
 
+  uint32_t irq_flags = spinlock_lock_irq(&scheduler_lock);
   new_proc->next = current_process->next;
   current_process->next = new_proc;
+  spinlock_unlock_irq(&scheduler_lock, irq_flags);
+
+  return new_proc;
 }
+
+extern "C" void user_mode_entry_asm(uint32_t entry, uint32_t utop);
 
 void user_mode_entry(uint32_t entry, uint32_t utop) {
-  asm volatile("  \
-        cli; \
-        mov $0x23, %%ax; \
-        mov %%ax, %%ds; \
-        mov %%ax, %%es; \
-        mov %%ax, %%fs; \
-        mov %%ax, %%gs; \
-        \
-        pushl $0x23; \
-        pushl %0; \
-        pushf; \
-        popl %%eax; \
-        orl $0x200, %%eax; \
-        pushl %%eax; \
-        pushl $0x1B; \
-        pushl %1; \
-        iret; \
-    " ::"r"(utop),
-               "r"(entry)
-               : "eax");
+    user_mode_entry_asm(entry, utop);
 }
 
-extern "C" void create_user_process(const char *filename, char *const argv[]) {
+extern "C" int create_user_process(const char *filename, char *const argv[]) {
   // Disable interrupts during process creation to prevent race conditions
   uint32_t eflags;
   asm volatile("pushf; pop %0; cli" : "=r"(eflags));
 
+  // Pre-resolve path and copy strings because caller's PD will be gone soon
+  char kfilename[256];
+  strncpy(kfilename, filename, 255);
+  kfilename[255] = 0;
+
+  int argc = 0;
+  char *kargv[16];
+  if (argv) {
+    while (argv[argc] && argc < 16) {
+      kargv[argc] = (char *)kmalloc(strlen(argv[argc]) + 1);
+      strcpy(kargv[argc], argv[argc]);
+      argc++;
+    }
+  }
+
+  // Ensure at least argv[0] exists
+  if (argc == 0) {
+    kargv[0] = (char *)kmalloc(strlen(kfilename) + 1);
+    strcpy(kargv[0], kfilename);
+    argc = 1;
+  }
+
   // User process load karne ka jugad
-  uint32_t phys_pd = (uint32_t)pd_create();
+  uintptr_t phys_pd = (uintptr_t)pd_create();
   if (!phys_pd) {
-    // Restore interrupts
+    for (int i = 0; i < argc; i++) kfree(kargv[i]);
     if (eflags & 0x200)
       asm volatile("sti");
-    return;
+    return -1;
   }
 
   uint32_t phys_old_pd;
   asm volatile("mov %%cr3, %0" : "=r"(phys_old_pd));
 
-  uint32_t *old_pd_ptr = current_process->page_directory;
-  current_process->page_directory = (uint32_t *)phys_pd;
+  uintptr_t old_pd_ptr = current_process->page_directory;
+  current_process->page_directory = phys_pd;
   pd_switch((uint32_t *)phys_pd);
 
   uint32_t top_addr = 0;
@@ -134,14 +273,14 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
 
   // Detect format
   uint8_t magic[4];
-  vfs_node_t *node = vfs_resolve_path(filename);
+  vfs_node_t *node = vfs_resolve_path(kfilename);
   if (node) {
     vfs_read(node, 0, magic, 4);
     if (magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' &&
         magic[3] == 'F') {
-      entry = load_elf(filename, &top_addr);
+      entry = load_elf(kfilename, &top_addr);
     } else if (magic[0] == 'M' && magic[1] == 'Z') {
-      entry = load_pe(filename, &top_addr);
+      entry = load_pe(kfilename, &top_addr);
     } else {
       serial_log("PROC ERROR: Unknown executable format");
     }
@@ -149,15 +288,16 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
 
   // Restore parent PD in current process struct
   current_process->page_directory = old_pd_ptr;
-  pd_switch((uint32_t *)phys_old_pd);
+  pd_switch((uint32_t *)(uintptr_t)phys_old_pd);
 
   if (entry == 0) {
-    serial_log("PROC ERROR: Failed to load ELF");
+    serial_log("PROC ERROR: Failed to load ELF/PE");
     pd_destroy((uint32_t *)phys_pd); // Clean up new PD
+    for (int i = 0; i < argc; i++) kfree(kargv[i]);
     // Restore interrupts
     if (eflags & 0x200)
       asm volatile("sti");
-    return;
+    return -2;
   }
 
   serial_log_hex("PROC: Created user process from ", entry);
@@ -167,7 +307,7 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
   new_proc->state = PROCESS_READY;
   new_proc->parent = current_process;
   new_proc->exit_code = 0;
-  new_proc->page_directory = (uint32_t *)phys_pd;
+  new_proc->page_directory = phys_pd;
   new_proc->heap_end = top_addr;
   new_proc->pledges = PLEDGE_ALL;
 
@@ -187,11 +327,13 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
     }
   }
 
-  // CWD inherit karo agar parent hai
+  // CWD inherit -- validated ghost-directory guard (Fix #3)
   if (current_process)
-    strcpy(new_proc->cwd, current_process->cwd);
-  else
-    strcpy(new_proc->cwd, "/");
+    cwd_inherit(new_proc->cwd, current_process->cwd);
+  else {
+    new_proc->cwd[0] = '/';
+    new_proc->cwd[1] = '\0';
+  }
 
   uint32_t *kstack = (uint32_t *)kmalloc(4096);
   uint32_t *ktop = kstack + 1024;
@@ -212,30 +354,23 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
 
   new_proc->entry_point = entry;
   new_proc->user_stack_top = user_stack_virt + 4096;
+  new_proc->tica_color = 0x0; // Default to WHITE
 
   // Copy argv to stack
-  uint32_t *old_stack_pd = current_process->page_directory;
-  current_process->page_directory = (uint32_t *)phys_pd;
+  uintptr_t old_stack_pd = current_process->page_directory;
+  current_process->page_directory = (uintptr_t)phys_pd;
   pd_switch((uint32_t *)phys_pd);
 
   uint32_t *ustack = (uint32_t *)new_proc->user_stack_top;
-  // ... (argc/argv copy logic)
-  int argc = 0;
-  if (argv) {
-    while (argv[argc])
-      argc++;
-  }
 
-  // Copy strings first
+  // Copy strings first from kernel-safe kargv
   uint32_t arg_ptrs[16]; // Max 16 args
-  if (argc > 16)
-    argc = 16;
-
   for (int i = argc - 1; i >= 0; i--) {
-    int len = strlen(argv[i]) + 1;
+    int len = strlen(kargv[i]) + 1;
     ustack = (uint32_t *)((uint32_t)ustack - len);
-    memcpy(ustack, argv[i], len);
+    memcpy(ustack, kargv[i], len);
     arg_ptrs[i] = (uint32_t)ustack;
+    kfree(kargv[i]); // Clean up kernel copy
   }
 
   // Align stack
@@ -264,7 +399,7 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
   *(--ktop) = (uint32_t)new_proc->user_stack_top;
   *(--ktop) = (uint32_t)entry;
   *(--ktop) = 0;
-  *(--ktop) = (uint32_t)user_mode_entry;
+  *(--ktop) = (uint32_t)user_mode_entry_asm;
 
   *(--ktop) = 0;
   *(--ktop) = 0;
@@ -272,59 +407,82 @@ extern "C" void create_user_process(const char *filename, char *const argv[]) {
   *(--ktop) = 0;
   *(--ktop) = 0x0202;
 
-  new_proc->esp = (uint32_t)ktop;
-  new_proc->kernel_stack_top = (uint32_t)kstack + 4096;
+  new_proc->esp = (uint32_t)(uintptr_t)ktop;
+  new_proc->kernel_stack_top = (uint32_t)(uintptr_t)kstack + 4096;
 
+  uint32_t irq_flags = spinlock_lock_irq(&scheduler_lock);
   new_proc->next = current_process->next;
   current_process->next = new_proc;
+  spinlock_unlock_irq(&scheduler_lock, irq_flags);
 
   serial_log("SCHED: User Process ready hai.");
+  int pid = (int)new_proc->id;
 
   // Restore interrupts
   if (eflags & 0x200)
     asm volatile("sti");
+
+  return pid;
 }
 
 void schedule() {
-  // Ab kaunsa process chalega?
   if (!current_process)
     return;
+
+  uint32_t irq_flags = spinlock_lock_irq(&scheduler_lock);
 
   if (current_process->state == PROCESS_RUNNING) {
     current_process->time_remaining--;
     if (current_process->time_remaining > 0) {
       process_t *p = current_process->next;
       int found_higher = 0;
+      int my_cpu = get_cpu_index();
       while (p != current_process) {
         if (p->state == PROCESS_READY &&
+            (p->pinned_cpu == -1 || p->pinned_cpu == my_cpu) &&
             p->priority < current_process->priority) {
           found_higher = 1;
           break;
         }
         p = p->next;
       }
-      if (!found_higher)
+      if (!found_higher) {
+        spinlock_unlock_irq(&scheduler_lock, irq_flags);
         return;
+      }
     }
   }
 
   process_t *old = current_process;
   process_t *best = 0;
   process_t *p = old->next;
+  int my_cpu = get_cpu_index();
 
   do {
     if (p->state == PROCESS_READY ||
         (p == old && old->state == PROCESS_RUNNING)) {
-      if (!best || p->priority < best->priority)
-        best = p;
+      // Affinity Check: Process must belong to no core or THIS core
+      if (p->pinned_cpu == -1 || p->pinned_cpu == my_cpu) {
+        // Scheduler Guard: Never schedule a task pinned to a core that isn't online yet
+        if (p->pinned_cpu != -1 && !(g_cores_online & (1 << p->pinned_cpu))) {
+            p = p->next;
+            continue;
+        }
+        if (!best || p->priority < best->priority)
+          best = p;
+      }
     }
     p = p->next;
   } while (p != old->next);
 
-  if (!best)
+  if (!best) {
+    spinlock_unlock_irq(&scheduler_lock, irq_flags);
     return;
+  }
+
   if (best == old && old->state == PROCESS_RUNNING) {
     current_process->time_remaining = current_process->time_slice;
+    spinlock_unlock_irq(&scheduler_lock, irq_flags);
     return;
   }
 
@@ -335,15 +493,27 @@ void schedule() {
   current_process->state = PROCESS_RUNNING;
   current_process->time_remaining = current_process->time_slice;
 
-  // Konsa process chal raha hai, console pe dekh lo debugging ke liye
-  // if (current_process->id != old->id) {
-  //   serial_log_hex("SCHED: Switching to PID ", current_process->id);
-  // }
+  // TICA Hardware Domain Switch
+  asm volatile("csrw 0x004, %0" : : "r"((uint32_t)current_process->tica_color));
+
+  // --- PHASE 4: FITNESS CULLING ---
+  if (current_process->tica_color == 0x01) { // GREEN Domain
+      #include "brain/brain_mailbox.h"
+      BrainMailbox *mb = (BrainMailbox*)BRAIN_MAILBOX_VIRT;
+      if (mb->energy_balance_gwei == 0) {
+          serial_log("[FITNESS] Organism Depleted. Natural Selection triggered.\n");
+          current_process->state = PROCESS_ZOMBIE;
+          current_process->exit_code = 0xDEAD;
+          // Continue to switch to something else
+      }
+  }
 
   set_kernel_stack(current_process->kernel_stack_top);
 
+  spinlock_unlock_irq(&scheduler_lock, irq_flags);
+
   switch_task(&old->esp, current_process->esp,
-              (uint32_t)current_process->page_directory);
+              (uint32_t)(uintptr_t)current_process->page_directory);
 }
 
 void enter_user_mode() {
@@ -374,7 +544,7 @@ int get_pid() { return current_process ? current_process->id : -1; }
 int fork_process(registers_t *parent_regs) {
   asm volatile("cli");
 
-  uint32_t phys_new_pd = (uint32_t)pd_clone(current_process->page_directory);
+  uintptr_t phys_new_pd = (uintptr_t)pd_clone((uint32_t *)current_process->page_directory);
   if (!phys_new_pd) {
     asm volatile("sti");
     return -1;
@@ -385,11 +555,11 @@ int fork_process(registers_t *parent_regs) {
   child->state = PROCESS_READY;
   child->parent = current_process;
   child->exit_code = 0;
-  child->page_directory = (uint32_t *)phys_new_pd;
+  child->page_directory = phys_new_pd;
   child->entry_point = current_process->entry_point;
   child->user_stack_top = current_process->user_stack_top;
   child->heap_end = current_process->heap_end;
-  strcpy(child->cwd, current_process->cwd);
+  cwd_inherit(child->cwd, current_process->cwd); // Fix #3: ghost-CWD guard
   child->pledges = current_process->pledges;
 
   for (int i = 0; i < MAX_PROCESS_FILES; i++) {
@@ -399,9 +569,9 @@ int fork_process(registers_t *parent_regs) {
   }
 
   uint32_t *child_kstack = (uint32_t *)kmalloc(4096);
-  child->kernel_stack_top = (uint32_t)child_kstack + 4096;
+  child->kernel_stack_top = (uint32_t)(uintptr_t)child_kstack + 4096;
 
-  uint32_t *stack_ptr = (uint32_t *)(child->kernel_stack_top);
+  uint32_t *stack_ptr = (uint32_t *)(uintptr_t)(child->kernel_stack_top);
   *(--stack_ptr) = parent_regs->ss;
   *(--stack_ptr) = parent_regs->useresp;
   *(--stack_ptr) = parent_regs->eflags | 0x200;
@@ -429,7 +599,7 @@ int fork_process(registers_t *parent_regs) {
   *(--stack_ptr) = 0x0202;
 
   serial_log_hex("PROC: Forked child PID ", child->id);
-  child->esp = (uint32_t)stack_ptr;
+  child->esp = (uint32_t)(uintptr_t)stack_ptr;
   child->next = current_process->next;
   current_process->next = child;
 
@@ -486,7 +656,7 @@ int wait_process(int *status) {
           ready_queue = child->next;
       }
       kfree((void *)(child->kernel_stack_top - 4096));
-      pd_destroy(child->page_directory);
+      pd_destroy((uint32_t *)child->page_directory);
       kfree(child);
       asm volatile("sti");
       return (int)pid;
@@ -517,6 +687,10 @@ int exec_process(registers_t *regs, const char *path, char *const argv[],
   serial_log("EXEC: Program chalane ki koshish...");
   serial_log(path);
 
+  // Disable interrupts during exec to prevent timer IRQs
+  // while page tables are in an intermediate state
+  asm volatile("cli");
+
   // Copy path to kernel space before clearing user mappings!
   char kernel_path[256];
   if (path) {
@@ -526,23 +700,32 @@ int exec_process(registers_t *regs, const char *path, char *const argv[],
     return -1;
   }
 
-  vm_clear_user_mappings();
   uint32_t top_addr = 0;
   uint32_t entry = 0;
 
-  // Detect format
+  // Detect format BEFORE clearing mappings
   uint8_t magic[4];
   vfs_node_t *node = vfs_resolve_path(kernel_path);
-  if (node) {
-    vfs_read(node, 0, magic, 4);
-    if (magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' &&
-        magic[3] == 'F') {
+  if (!node) {
+      serial_log("EXEC ERROR: File not found: ");
+      serial_log(kernel_path);
+      return -1;
+  }
+
+  vfs_read(node, 0, magic, 4);
+  if (!(magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') &&
+      !(magic[0] == 'M' && magic[1] == 'Z')) {
+      serial_log("EXEC ERROR: Unknown format.");
+      return -1;
+  }
+
+  // File exists and is valid format, NOW we can commit to clearing old mappings.
+  vm_clear_user_mappings();
+
+  if (magic[0] == 0x7F) {
       entry = load_elf(kernel_path, &top_addr);
-    } else if (magic[0] == 'M' && magic[1] == 'Z') {
+  } else {
       entry = load_pe(kernel_path, &top_addr);
-    } else {
-      serial_log("EXEC: Unknown format.");
-    }
   }
 
   if (entry == 0) {
@@ -552,17 +735,64 @@ int exec_process(registers_t *regs, const char *path, char *const argv[],
 
   serial_log_hex("EXEC: Entry point loaded at ", entry);
 
+  // Copy argv to kernel space before clearing user mappings!
+  int argc = 0;
+  char *kargv[16];
+  if (argv) {
+      while (argv[argc] && argc < 16) {
+          kargv[argc] = (char *)kmalloc(strlen(argv[argc]) + 1);
+          strcpy(kargv[argc], argv[argc]);
+          argc++;
+      }
+  }
+
+  // Ensure at least argv[0] exists
+  if (argc == 0) {
+      kargv[0] = (char *)kmalloc(strlen(kernel_path) + 1);
+      strcpy(kargv[0], kernel_path);
+      argc = 1;
+  }
+
   uint32_t user_stack_virt = 0xB0000000;
-  vm_map_page((uint32_t)pmm_alloc_block(), user_stack_virt, 7);
-  vm_map_page((uint32_t)pmm_alloc_block(), user_stack_virt - 0x1000, 7);
-  vm_map_page((uint32_t)pmm_alloc_block(), user_stack_virt + 0x1000, 7);
+  vm_map_page((uint32_t)(uintptr_t)pmm_alloc_block(), user_stack_virt, 7);
+  vm_map_page((uint32_t)(uintptr_t)pmm_alloc_block(), user_stack_virt - 0x1000, 7);
+  vm_map_page((uint32_t)(uintptr_t)pmm_alloc_block(), user_stack_virt + 0x1000, 7);
+
+  // Copy argv to the new stack
+  uint32_t *ustack = (uint32_t *)(uintptr_t)(user_stack_virt + 4096);
+  uint32_t arg_ptrs[16];
+  for (int i = argc - 1; i >= 0; i--) {
+      int len = strlen(kargv[i]) + 1;
+      ustack = (uint32_t *)(uintptr_t)((uint32_t)(uintptr_t)ustack - len);
+      memcpy(ustack, kargv[i], len);
+      arg_ptrs[i] = (uint32_t)(uintptr_t)ustack;
+      kfree(kargv[i]);
+  }
+
+  ustack = (uint32_t *)(uintptr_t)((uint32_t)(uintptr_t)ustack & ~3);
+  ustack -= (argc + 1);
+  uint32_t argv_base = (uint32_t)(uintptr_t)ustack;
+  for (int i = 0; i < argc; i++) {
+      ustack[i] = arg_ptrs[i];
+  }
+  ustack[argc] = 0;
+
+  ustack -= 1;
+  *ustack = argv_base;
+  ustack -= 1;
+  *ustack = (uint32_t)argc;
 
   current_process->entry_point = entry;
-  current_process->user_stack_top = user_stack_virt + 4096;
+  current_process->user_stack_top = (uint32_t)ustack;
   current_process->heap_end = top_addr;
-  current_process->pledges = PLEDGE_ALL; // Reset pledges for new exec
+  current_process->pledges = PLEDGE_ALL;
+
   regs->eip = entry;
-  regs->useresp = current_process->user_stack_top;
+  regs->useresp = (uint32_t)ustack;
+  regs->cs = 0x1B;          // Ring 3 code selector
+  regs->ss = 0x23;          // Ring 3 stack selector
+  regs->ds = 0x23;          // Ring 3 data selector
+  regs->eflags |= 0x200;    // Ensure interrupts enabled in user mode
 
   serial_log("EXEC: Success. Jump to user mode.");
   return 0;
@@ -640,8 +870,8 @@ int sys_waitpid(int pid, int *status, int options) {
       }
 
       // Free resources
-      kfree((void *)(found->kernel_stack_top - 4096));
-      pd_destroy(found->page_directory);
+      kfree((void *)(uintptr_t)(found->kernel_stack_top - 4096));
+      pd_destroy((uint32_t *)(uintptr_t)found->page_directory);
       kfree(found);
 
       asm volatile("sti");
@@ -653,16 +883,6 @@ int sys_waitpid(int pid, int *status, int options) {
     p = ready_queue;
     do {
       bool matches = false;
-      // The following lines were incorrectly placed here in the original diff.
-      // They seem to be part of an ICMP packet processing logic.
-      // int ip_hdr_len = (ip->ver_ihl & 0x0F) * 4;
-      // int icmp_total_len = htons(ip->len) - ip_hdr_len;
-      // if (icmp_total_len < (int)sizeof(icmp_hdr))
-      //   return;
-      // int icmp_data_len = icmp_total_len - sizeof(icmp_hdr);
-      // if (payload_len < (int)sizeof(icmp_hdr))
-      //   return;
-      // int icmp_data_len = payload_len - sizeof(icmp_hdr);
       if (pid == -1) {
         matches = (p->parent == current_process);
       } else if (pid == 0) {
@@ -836,11 +1056,11 @@ int sys_posix_spawn(int *pid_out, const char *path, void *file_actions,
     return -22; // EINVAL
 
   // Create new process directly (more efficient than fork+exec)
-  uint32_t phys_pd = (uint32_t)pd_create();
+  uintptr_t phys_pd = (uintptr_t)pd_create();
   if (!phys_pd)
     return -12; // ENOMEM
 
-  uint32_t phys_old_pd;
+  uintptr_t phys_old_pd;
   asm volatile("mov %%cr3, %0" : "=r"(phys_old_pd));
 
   pd_switch((uint32_t *)phys_pd);
@@ -866,7 +1086,7 @@ int sys_posix_spawn(int *pid_out, const char *path, void *file_actions,
   new_proc->state = PROCESS_READY;
   new_proc->parent = current_process;
   new_proc->exit_code = 0;
-  new_proc->page_directory = (uint32_t *)phys_pd;
+  new_proc->page_directory = phys_pd;
   new_proc->heap_end = top_addr;
   new_proc->pledges = PLEDGE_ALL;
   new_proc->pgid = current_process->pgid;
@@ -887,7 +1107,7 @@ int sys_posix_spawn(int *pid_out, const char *path, void *file_actions,
       new_proc->fd_table[i]->ref_count++;
   }
 
-  strcpy(new_proc->cwd, current_process->cwd);
+  cwd_inherit(new_proc->cwd, current_process->cwd); // Fix #3: ghost-CWD guard
 
   new_proc->priority = DEFAULT_PRIORITY;
   new_proc->time_slice = DEFAULT_TIME_SLICE;
@@ -910,14 +1130,14 @@ int sys_posix_spawn(int *pid_out, const char *path, void *file_actions,
 
   // Allocate kernel stack
   uint32_t *kstack = (uint32_t *)kmalloc(4096);
-  new_proc->kernel_stack_top = (uint32_t)kstack + 4096;
+  new_proc->kernel_stack_top = (uint32_t)(uintptr_t)kstack + 4096;
 
   // Allocate user stack
   pd_switch((uint32_t *)phys_pd);
   uint32_t user_stack_virt = 0xB0000000;
-  vm_map_page((uint32_t)pmm_alloc_block(), user_stack_virt, 7);
-  vm_map_page((uint32_t)pmm_alloc_block(), user_stack_virt - 0x1000, 7);
-  vm_map_page((uint32_t)pmm_alloc_block(), user_stack_virt + 0x1000, 7);
+  vm_map_page((uint32_t)(uintptr_t)pmm_alloc_block(), user_stack_virt, 7);
+  vm_map_page((uint32_t)(uintptr_t)pmm_alloc_block(), user_stack_virt - 0x1000, 7);
+  vm_map_page((uint32_t)(uintptr_t)pmm_alloc_block(), user_stack_virt + 0x1000, 7);
   pd_switch((uint32_t *)phys_old_pd);
 
   new_proc->entry_point = entry;
@@ -929,14 +1149,14 @@ int sys_posix_spawn(int *pid_out, const char *path, void *file_actions,
   *(--ktop) = entry;
   *(--ktop) = 0;
   extern void user_mode_entry(uint32_t entry, uint32_t utop);
-  *(--ktop) = (uint32_t)user_mode_entry;
+  *(--ktop) = (uint32_t)(uintptr_t)user_mode_entry;
   *(--ktop) = 0;      // ebp
   *(--ktop) = 0;      // ebx
   *(--ktop) = 0;      // esi
   *(--ktop) = 0;      // edi
   *(--ktop) = 0x0202; // flags
 
-  new_proc->esp = (uint32_t)ktop;
+  new_proc->esp = (uint32_t)(uintptr_t)ktop;
 
   // Add to process list
   new_proc->next = current_process->next;

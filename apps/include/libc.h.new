@@ -1,0 +1,93 @@
+#ifndef _LIBC_H
+#define _LIBC_H
+
+// If we are using Newlib headers, delegate to them
+#ifdef _LIBC_SKIP_STANDARD_FUNCS
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#else
+
+#include "syscall.h"
+#include "userlib.h"
+
+#ifndef NULL
+#define NULL 0
+#endif
+
+#ifndef offsetof
+#define offsetof(type, member) ((uint32_t)&((type *)0)->member)
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int fork();
+int execve(const char *path, char *const argv[], char *const envp[]);
+int wait(int *status);
+int chdir(const char *path);
+char *getcwd(char *buf, size_t size);
+void exit(int status);
+
+int open(const char *path, int flags, ...);
+int close(int fd);
+ssize_t read(int fd, void *buf, size_t count);
+ssize_t write(int fd, const void *buf, size_t count);
+int unlink(const char *path);
+int rmdir(const char *path);
+int mkdir(const char *path, mode_t mode);
+
+void *malloc(size_t size);
+void free(void *ptr);
+static inline void *calloc(size_t nmemb, size_t size) {
+  size_t total = nmemb * size;
+  void *p = malloc(total);
+  if (p)
+    memset(p, 0, total);
+  return p;
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+/* Absolute value */
+#ifndef abs
+#define abs(n) ((n) < 0 ? -(n) : (n))
+#endif
+static inline long labs(long n) { return n < 0 ? -n : n; }
+
+#ifndef _DIV_T_DEFINED
+#define _DIV_T_DEFINED
+typedef struct {
+  int quot;
+  int rem;
+} div_t;
+typedef struct {
+  long quot;
+  long rem;
+} ldiv_t;
+#endif
+
+static inline div_t div(int numer, int denom) {
+  div_t result;
+  result.quot = numer / denom;
+  result.rem = numer % denom;
+  return result;
+}
+
+static inline ldiv_t ldiv(long numer, long denom) {
+  ldiv_t result;
+  result.quot = numer / denom;
+  result.rem = numer % denom;
+  return result;
+}
+
+static inline long strtol(const char *s, char **endptr, int base) { ... } // Replaced with ... for brevity in thoughts but I'll use the original content
+#endif // _LIBC_SKIP_STANDARD_FUNCS
+
+// Restore original content from line 88 onwards

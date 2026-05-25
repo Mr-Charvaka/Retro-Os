@@ -25,6 +25,11 @@
 #define LAPIC_TCC 0x390
 #define LAPIC_TDCR 0x3E0
 
+// IPI Vectors
+#define IPI_VECTOR_TLB_SHOOTDOWN 0xF0
+#define IPI_VECTOR_SCHEDULE      0xF1
+#define IPI_VECTOR_PANIC         0xF2
+
 // IO-APIC Registers (Offsets for IOREGSEL)
 #define IOAPIC_ID 0x00
 #define IOAPIC_VER 0x01
@@ -35,15 +40,30 @@
 extern "C" {
 #endif
 
+#define MAX_CPUS 16
+
 extern uint32_t lapic_base;
 extern uint32_t ioapic_base;
+extern uint32_t total_cpus;
+extern uint8_t  cpu_apic_ids[MAX_CPUS];
 
 void lapic_init();
 void lapic_eoi();
+uint8_t lapic_get_id();
+uint32_t get_cpu_index();
+
 void ioapic_init();
+void smp_init();
 void ioapic_set_irq(uint8_t irq, uint64_t vector_data);
 void ioapic_set_mask(uint8_t irq, bool masked);
 void apic_map_hardware();
+
+// SMP IPI Primitives
+void smp_send_ipi(uint8_t target_apic_id, uint8_t vector);
+void smp_send_ipi_all_but_self(uint8_t vector);
+void smp_tlb_shootdown(uint32_t virt);
+void smp_halt_others();
+void smp_reschedule(uint8_t target_cpu_idx);
 
 #ifdef __cplusplus
 }

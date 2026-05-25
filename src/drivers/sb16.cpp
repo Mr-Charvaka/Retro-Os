@@ -9,6 +9,7 @@
 // SB16 State
 static volatile int g_audio_in_use = 0;
 static volatile int g_audio_buffer_index = 1; // 0 or 1 for double buffering
+bool g_sb16_present = false;
 
 // Hardware Delay
 static void sb16_delay() {
@@ -17,7 +18,7 @@ static void sb16_delay() {
 }
 
 // DSP Helpers
-static void sb16_write(uint8_t data) {
+void sb16_write(uint8_t data) {
   while (inb(SB_DSP_WRITE) & 0x80)
     ;
   outb(SB_DSP_WRITE, data);
@@ -78,6 +79,7 @@ static void dma_setup_channel5(uint32_t phys_addr, uint32_t length_in_words) {
 void sb16_init() {
   if (sb16_reset()) {
     serial_log("SB16: Sound Blaster 16 Detected!");
+    g_sb16_present = true;
     sb16_write(SB_CMD_SPEAKER_ON);
 
     // Register IRQ 5 handler

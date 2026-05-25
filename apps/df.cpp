@@ -1,20 +1,21 @@
 #include "include/os/ipc.hpp"
 #include "include/os/syscalls.hpp"
 
-extern "C" void _start() {
+extern "C" int main(int argc, char** argv) {
   OS::Syscall::print("DF App: Starting...\n");
-
   OS::IPCClient app;
   if (!app.connect()) {
-    OS::Syscall::exit(1);
+    return 1;
   }
 
   if (!app.create_window("Disk Usage", 400, 300)) {
-    OS::Syscall::exit(1);
+    return 1;
   }
 
   uint32_t total, free, block_size;
-  OS::Syscall::statfs(&total, &free, &block_size);
+  if (OS::Syscall::statfs(&total, &free, &block_size) != 0) {
+      return 1;
+  }
 
   // Calculate usage
   uint32_t used = total - free;
@@ -34,4 +35,5 @@ extern "C" void _start() {
   while (true) {
     OS::Syscall::sleep(1000);
   }
+  return 0;
 }

@@ -46,17 +46,22 @@ static uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, udp_hdr *udp,
   pseudo.protocol = 17; // UDP
   pseudo.udp_length = udp->len;
 
-  uint16_t *ptr = (uint16_t *)&pseudo;
-  for (size_t i = 0; i < sizeof(pseudo) / 2; i++)
-    sum += udp_ntohs(ptr[i]);
+  uint8_t *ps_ptr = (uint8_t *)&pseudo;
+  for (size_t i = 0; i < sizeof(pseudo) / 2; i++) {
+    uint16_t v; memcpy(&v, ps_ptr + i*2, 2);
+    sum += udp_ntohs(v);
+  }
 
-  ptr = (uint16_t *)udp;
-  for (size_t i = 0; i < sizeof(udp_hdr) / 2; i++)
-    sum += udp_ntohs(ptr[i]);
+  uint8_t *u_hdr_ptr = (uint8_t *)udp;
+  for (size_t i = 0; i < sizeof(udp_hdr) / 2; i++) {
+    uint16_t v; memcpy(&v, u_hdr_ptr + i*2, 2);
+    sum += udp_ntohs(v);
+  }
 
-  ptr = (uint16_t *)payload;
-  for (size_t i = 0; i < payload_len / 2; i++)
-    sum += udp_ntohs(ptr[i]);
+  for (size_t i = 0; i < payload_len / 2; i++) {
+    uint16_t v; memcpy(&v, payload + i*2, 2);
+    sum += udp_ntohs(v);
+  }
 
   if (payload_len & 1)
     sum += payload[payload_len - 1] << 8;

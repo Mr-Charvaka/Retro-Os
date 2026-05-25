@@ -2,6 +2,10 @@
 #include "../drivers/serial.h"
 #include "../include/string.h"
 #include "heap.h"
+ 
+extern "C" {
+int slab_is_initialized = 0;
+}
 
 
 #define PAGE_SIZE 4096
@@ -63,6 +67,7 @@ void slab_init() {
     slab_caches[i].object_size = sizes[i];
     slab_caches[i].first_slab = 0;
   }
+  slab_is_initialized = 1;
   serial_log("SLAB: Initialized.");
 }
 
@@ -88,8 +93,9 @@ void *slab_alloc(uint32_t size) {
     // We use kmalloc_a(4096, 1, 0) but we need to ensure we don't recurse
     // infinitely. kmalloc calls slab_alloc. So we must ensure slab_alloc is NOT
     // called for 4096 bytes. 4096 > 2048, so it goes to main heap. Safe.
+    // Use kmalloc_internal (unlocked) to avoid recursive deadlock on heap_lock
     uint32_t phys;
-    void *page = kmalloc_real(PAGE_SIZE, 1, &phys);
+    void *page = kmalloc_internal(PAGE_SIZE, 1, &phys);
     if (!page) {
       serial_log("SLAB: OOM allocating slab page!");
       return 0;

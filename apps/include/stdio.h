@@ -6,6 +6,12 @@
 #define _STDIO_H
 
 #include "libc.h"
+
+// If we are using Newlib headers, delegate to it
+#ifdef _LIBC_SKIP_STANDARD_FUNCS
+#include <stdio.h>
+#else
+
 #include "syscall.h"
 #include "userlib.h"
 #include <stdarg.h>
@@ -24,6 +30,10 @@
 #define _IOLBF 1
 #define _IONBF 2
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct {
   int fd;
   int flags;
@@ -36,13 +46,9 @@ typedef struct {
   int mode;
 } FILE;
 
-static FILE _stdin = {0, 1, 0, 0, 0, 0, 0, 0, _IONBF};
-static FILE _stdout = {1, 2, 0, 0, 0, 0, 0, 0, _IONBF};
-static FILE _stderr = {2, 2, 0, 0, 0, 0, 0, 0, _IONBF};
-
-#define stdin (&_stdin)
-#define stdout (&_stdout)
-#define stderr (&_stderr)
+extern FILE *stdin;
+extern FILE *stdout;
+extern FILE *stderr;
 
 static inline FILE *fopen(const char *path, const char *mode) {
   int flags = 0;
@@ -243,13 +249,7 @@ static inline int snprintf(char *str, uint32_t n, const char *fmt, ...) {
 }
 
 /* Perror */
-static inline void perror(const char *s) {
-  if (s && *s) {
-    fputs(s, stderr);
-    fputs(": ", stderr);
-  }
-  fputs("Error\n", stderr);
-}
+void perror(const char *s);
 
 /* Temporary files */
 static int tmpnam_counter = 0;
@@ -283,4 +283,10 @@ static inline int fscanf(FILE *f, const char *fmt, ...) {
   return 0;
 }
 
-#endif /* _STDIO_H */
+#ifdef __cplusplus
+}
+#endif
+
+#endif // _LIBC_SKIP_STANDARD_FUNCS
+
+#endif // _STDIO_H

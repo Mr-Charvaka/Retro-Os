@@ -12,7 +12,7 @@
 #include "memory.h"
 #include "process.h"
 
-extern void create_kernel_thread(void (*fn)());
+// Refactored to use process.h declaration
 
 extern "C" {
 
@@ -462,15 +462,7 @@ int pthread_attr_getschedpolicy(const pthread_attr_t *attr, int *policy) {
 // Mutex Functions
 // ============================================================================
 
-// Atomic compare-and-swap helper
-static inline int atomic_cas(volatile int *ptr, int expected, int desired) {
-  int result;
-  asm volatile("lock cmpxchgl %2, %1"
-               : "=a"(result), "+m"(*ptr)
-               : "r"(desired), "0"(expected)
-               : "memory");
-  return result == expected;
-}
+// Redundant atomic_cas removed (using definition from process.h)
 
 int pthread_mutex_init(pthread_mutex_t *mutex,
                        const pthread_mutexattr_t *attr) {
@@ -823,7 +815,7 @@ int pthread_rwlock_unlock(pthread_rwlock_t *rwlock) {
     rwlock->writers = rwlock->writers + 1;
     rwlock->write_owner = 0;
   } else if (rwlock->readers > 0) {
-    rwlock->readers--;
+    rwlock->readers = rwlock->readers - 1;
   }
 
   pthread_mutex_unlock(&rwlock->lock);
@@ -873,7 +865,7 @@ int pthread_barrier_wait(pthread_barrier_t *barrier) {
   if (barrier->current >= barrier->count) {
     // Last thread to arrive
     barrier->current = 0;
-    barrier->_phase++;
+    barrier->_phase = barrier->_phase + 1;
     pthread_cond_broadcast(&barrier->cond);
     pthread_mutex_unlock(&barrier->lock);
     return PTHREAD_BARRIER_SERIAL_THREAD;

@@ -1,11 +1,13 @@
 // Contracts aur Interfaces uthao shuru mein
 #include "../include/Contracts.h"
 #include "../include/KernelInterfaces.h"
-#include <fs_phase.h>
+#include "../include/fs_phase.h"
 
 #include "../drivers/acpi.h"
+#include "../drivers/ac97.h"
+#include "../drivers/ahci.h"
 #include "../drivers/bga.h"
-#include "../drivers/fat16.h"
+#include "../drivers/fat32.h"
 #include "../drivers/graphics.h"
 #include "../drivers/hpet.h"
 #include "../drivers/keyboard.h"
@@ -13,8 +15,11 @@
 #include "../drivers/pci.h"
 #include "../drivers/rtc.h"
 #include "../drivers/serial.h"
+#include "../drivers/sb16.h"
 #include "../drivers/timer.h"
 #include "../drivers/vga.h"
+#include "../drivers/block.h"
+
 
 // Drivers ki fauj yahan hai
 #include "../include/idt.h"
@@ -34,11 +39,17 @@
 #include "paging.h"
 #include "pmm.h"
 #include "process.h"
+#include "ring2.h"
+#include "brain/brain_mailbox.h"
 #include "slab.h"
 #include "socket.h"
 #include "syscall.h"
 #include "tsc.h"
 #include "tty.h"
+#include "e820.h"
+#include "pmm_high.h"
+#include "pae.h"   // NEW: PAE Paging System
+#include "pae_security.h"
 
 extern "C" void gui_main();
 extern uint32_t *back_buffer;   // graphics se liya
@@ -136,9 +147,17 @@ extern "C" void sys_get_mouse(int *x, int *y, int *btn) {
   *btn = (int)b;
 }
 
+extern "C" {
+extern uint8_t cpu_apic_ids[];
+void ioapic_route_irq(uint8_t irq, uint8_t apic_id);
+}
+
+// Rev S: AI Brain activation flag
+volatile int g_brain_activated = 0;
+
 extern "C" uint32_t tick;
 extern "C" uint32_t sys_time_ms() {
-  return tick * 20; // 50Hz = 20ms per tick
+  return tick * 10; // 100Hz = 10ms per tick
 }
 
 // Advanced network stack initialization
@@ -170,8 +189,7 @@ extern "C" void net_thread() {
 }
 
 extern "C" int sys_spawn(const char *path, char **argv) {
-  create_user_process(path, argv);
-  return 0;
+  return create_user_process(path, argv);
 }
 
 // Keyboard: aakhri scancode wapas karo ya -1 agar kuch nahi hai
@@ -251,7 +269,7 @@ static vfs_node_t *resolve_k_fd(int fd) {
   if (fd >= 1000 && fd < 1032)
     return k_fd_table[fd - 1000];
   if (fd > 0x100000)
-    return (vfs_node_t *)fd; // Direct pointer
+    return (vfs_node_t *)(uintptr_t)fd; // Direct pointer
   return nullptr;
 }
 
@@ -351,49 +369,117 @@ static void isr9_handler(registers_t *regs) {
 
 extern "C" void __cxx_global_ctor_init();
 
+extern "C" void init_brain_syscalls(void);
+
 extern "C" int main() {
   init_serial();
   // Yahan se asli kahani shuru hoti hai
   serial_log("KERNEL: Booting Higher-Half Retro-OS...");
 
   extern char _bss_start, _bss_end, _kernel_end;
-  serial_log_hex("KERNEL: BSS Start: ", (uint32_t)&_bss_start);
-  serial_log_hex("KERNEL: BSS End:   ", (uint32_t)&_bss_end);
-  serial_log_hex("KERNEL: End:       ", (uint32_t)&_kernel_end);
+  serial_log_hex("KERNEL: BSS Start: ", (uintptr_t)&_bss_start);
+  serial_log_hex("SMP: Param PDPT:    ", (uintptr_t)*(uint32_t*)0x1008);
+  serial_log_hex("KERNEL: BSS End:   ", (uintptr_t)&_bss_end);
+  serial_log_hex("KERNEL: End:       ", (uintptr_t)&_kernel_end);
 
   // 0. Early CPU Setup taaki faults pakad sakein
   serial_log("KERNEL: Init GDT...");
   init_gdt();
   serial_log("KERNEL: Init ISRs...");
   isr_install();
+  pci_probe();
 
   // 1. Core Memory setup (Sabse pehle ye zaroori hai)
-  // Kernel ends at about 6.2MB (_kernel_end = 0xC062F000 = physical 0x0062F000)
-  // Placement heap at 7MB - safely beyond kernel
-  init_memory(PHYS_TO_VIRT(0x00700000)); // 7MB placement heap
+  init_memory(PHYS_TO_VIRT(PLACEMENT_PHYS_START)); 
 
-  serial_log("KERNEL: Init PMM at 8MB...");
-  uint32_t mem_size = 512 * 1024 * 1024;
-  // PMM bitmap at 8MB - safely beyond kernel end (6.2MB) and placement heap
-  // (7MB)
-  uint32_t *bitmap_addr = (uint32_t *)PHYS_TO_VIRT(0x00800000); // 8MB
-  pmm_init(mem_size, bitmap_addr);
+  // Parse E820 memory map from bootloader
+  serial_log("KERNEL: Parsing E820 memory map...");
+  e820_parse(true); 
+  e820_print_map();
 
-  pmm_mark_region_used(0x0, 0x100000);      // Low Memory (0-1MB)
-  pmm_mark_region_used(0x100000, 0x700000); // Kernel + Placement Heap (1-8MB)
-  pmm_mark_region_used(VIRT_TO_PHYS(bitmap_addr), 16384); // PMM Bitmap at 8MB
-  // pmm_mark_region_used(0x01000000, 0x20000000); // Kernel Heap Physical
-  // (512MB) - Don't mark used!
+  // 2. PMM initialization — now E820-aware!
+  serial_log("KERNEL: Init PMM...");
+  
+  uint32_t low_mem_size = e820_get_usable_low_memory();
+  if (low_mem_size == 0) {
+      low_mem_size = TOTAL_RAM;
+      serial_log("KERNEL: WARNING — E820 failed, using hardcoded TOTAL_RAM");
+  }
+  if (low_mem_size > 0xFFF00000) low_mem_size = 0xFFF00000;
+  
+  serial_log_hex("KERNEL: Low memory size for PMM: ", low_mem_size);
+  
+  uint32_t *bitmap_addr = (uint32_t *)PHYS_TO_VIRT(0x00E00000); // 14MB
+  pmm_init(low_mem_size, bitmap_addr);
+
+  // Use E820 regions instead of blanket free
+  e820_init_pmm_regions();
+
+  // -- Step B: Re-reserve regions that must never be allocated --------------
+  pmm_mark_region_used(0x0,       0x100000); // Low 1 MB (IVT, BIOS, VGA, etc.)
+  pmm_mark_region_used(KERNEL_PHYS_START,  0xA00000); // Kernel image
+  pmm_mark_region_used(PLACEMENT_PHYS_START,  PLACEMENT_SIZE); // Placement heap
+  pmm_mark_region_used(VIRT_TO_PHYS(bitmap_addr), 32768); // PMM bitmap (32KB for 1GB)
+  
+  // -- Step C: Reserve Ring 2 Territory -------------------------------------
+  pmm_mark_region_used(RING2_PHYS_START, RING2_REGION_SIZE);
+
+  // -- Step D: Reserve FULL Kernel Heap -------------------------------------
+  // Heap: physical 16MB to 272MB (256MB total)
+  // Contains: buddy allocator, slab allocator, GUI backbuffer, all kmalloc
+  // WITHOUT this, PMM hands heap pages to user processes -> corruption
+  pmm_mark_region_used(KHEAP_PHYS_START, KHEAP_SIZE);
+  
+  // Reserve E820 data area
+  pmm_mark_region_used(E820_BOOT_COUNT_PHYS, 
+                       E820_BOOT_DATA_PHYS + (E820_BOOT_MAX_ENTRIES * 24) 
+                       - E820_BOOT_COUNT_PHYS);
 
   serial_log("KERNEL: PMM After Reservations:");
   pmm_print_stats();
 
-  // 3. Full paging setup (Boot mapping se unified map ki taraf)
-  serial_log("KERNEL: Init Paging...");
-  init_paging();
+  // Initialize high-memory allocator
+  serial_log("KERNEL: Init High-Memory PMM...");
+  pmm_high_init();
+
+  // 3. Full PAE paging setup (Boot mapping se 3-level 64GB map ki taraf)
+  serial_log("KERNEL: Init PAE 3-Level Paging...");
+  pae_init(); 
+
+  // --- High Memory Verification Loop (PAE Sliding Window Test) ---
+  uint64_t high_phys = pmm_high_alloc(1); // Get 1x 2MB chunk above 4GB
+  if (high_phys) {
+      void* mapped = pae_map_window(high_phys, 0); // Window into high memory
+      uint32_t* test_ptr = (uint32_t*)mapped;
+      *test_ptr = 0xDEADC0DE; // Write to Physical RAM > 4GB
+      
+      serial_log_hex("PAE TEST: Wrote 0xDEADC0DE to high physical ", (uint32_t)high_phys);
+      if (*test_ptr == 0xDEADC0DE) {
+          serial_log("PAE TEST: Readback successful. High Memory Accessible! ✓");
+      } else {
+          serial_log("PAE TEST: ERROR - Readback mismatch. Paging Failure. ✗");
+      }
+      pae_unmap_window(0);
+      pmm_high_free(high_phys, 1);
+  }
+
+  // 3.5 Zero Ring 2 stack memory
+  // Must happen AFTER paging (so virtual addresses work)
+  // Must happen BEFORE anything uses Ring 2
+  serial_log("KERNEL: Zeroing Ring 2 stack...");
+  memset((void*)RING2_STACK_VIRT, 0, RING2_STACK_SIZE);
+  serial_log_hex("KERNEL: Ring 2 stack zeroed at ", RING2_STACK_VIRT);
+  serial_log_hex("KERNEL: Ring 2 stack top (ESP) ", RING2_STACK_TOP_VIRT);
 
   // 4. Paging ke baad ki taiyari
   init_syscalls();
+  init_brain_syscalls();
+  void ring2_foundation_verify(void);
+  ring2_foundation_verify();
+
+  // 4. Activate PAE Security (NX Compensation)
+  pae_security_init();
+
   register_interrupt_handler(8, (isr_t)isr8_handler);
   register_interrupt_handler(9, (isr_t)isr9_handler);
 
@@ -406,8 +492,8 @@ extern "C" int main() {
   init_keyboard();
   init_mouse();
 
-  serial_log("KERNEL: Enabling global interrupts...");
-  asm volatile("sti");
+    // Global interrupts will be enabled later after all cores are online
+    // asm volatile("sti");
 
   hpet_init();
   tsc_calibrate();
@@ -417,18 +503,21 @@ extern "C" int main() {
 
   // 6. Heap & Filesystem - 256MB heap (16MB to 272MB physical)
   // Note: init_paging maps 0-512MB physical. Heap must stay within this range.
-  // Using 256MB to leave room for kernel, page tables, etc.
-  init_kheap(PHYS_TO_VIRT(0x01000000), PHYS_TO_VIRT(0x11000000),
-             PHYS_TO_VIRT(0x11000000));
+  init_kheap(PHYS_TO_VIRT(KHEAP_PHYS_START), PHYS_TO_VIRT(KHEAP_PHYS_END),
+             PHYS_TO_VIRT(KHEAP_PHYS_END));
   set_heap_status(1);
   slab_init();
   extern int slab_is_initialized;
   slab_is_initialized = 1;
 
-  // C++ global constructors initialize karo (vtables ke liye zaroori hai)
-  __cxx_global_ctor_init();
+  serial_log("KERNEL: Init Block Layer...");
+  serial_log("KERNEL: Calling block_init()...\n");
+  block_init();
+  serial_log("KERNEL: block_init() done.\n");
+  block_print_devices();
 
-  fat16_init();
+  ac97_init();
+  sb16_init();
   // vfs_root = fat16_vfs_init(); // Handled by vfs_init
   // vfs_dev = devfs_init(); // Handled by vfs_init
   socket_init();
@@ -454,55 +543,138 @@ extern "C" int main() {
     serial_log("KERNEL: Network Card (e1000) NOT Found.");
   }
 
-  // 7. Graphics (BGA)
+  // 7. Graphics & SMP Initialization
   serial_log("KERNEL: Scanning PCI for BGA...");
-  u32 fb_addr = pci_get_bga_bar0();
+  uint32_t bga_phys = pci_get_bga_bar0(); // Physical BAR0
+  uint32_t virtual_fb = 0xFD000000;       // Fixed virtual landing
 
-  if (fb_addr == 0) {
+  if (bga_phys == 0) {
     serial_log("KERNEL: FATAL - BGA Not Found! Attempting VBE fallback.");
-    // TODO: agar zarurat padi toh VBE fallback lagayenge
   } else {
-    serial_log_hex("KERNEL: BGA LFB Address: ", fb_addr);
-    // KERNEL LFB
+    // 6. APIC & SMP - Handled by irq_install()
+    serial_log_hex("APIC: Verified Processors count: ", total_cpus);
+
+    // 7. Graphics Initialization
     bga_set_video_mode(1024, 768, 32);
+    
+    serial_log_hex("KERNEL: BGA LFB Physical: ", bga_phys);
+    serial_log("KERNEL: Mapping VRAM (16 MB) via range...");
+    // 16MB = 4096 pages
+    pae_map_range(virtual_fb, bga_phys, 4096, 
+                  PAE_FLAG_PRESENT | PAE_FLAG_WRITABLE | PAE_FLAG_PCD | PAE_FLAG_PWT);
 
-    // Ek bada framebuffer region map karo (e.g.,q7 16 MB) safety ke liye
-    // Dhyan rahe ye mapping init_paging() ke BAAD honi chahiye
-    const uint32_t fb_size = 16 * 1024 * 1024; // 16 MB
-    const uint32_t pages = fb_size / 4096;
-    serial_log("KERNEL: Mapping VRAM (16 MB)...");
-    for (uint32_t i = 0; i < pages; i++) {
-      paging_map(fb_addr + (i * 4096), fb_addr + (i * 4096), 3);
-    }
+    init_graphics(virtual_fb);
+    serial_log_hex("GRAPHICS: BGA Framebuffer mapped at: ", virtual_fb);
 
-    serial_log("KERNEL: PMM After VRAM Map:");
-    pmm_print_stats();
-
-    init_graphics(fb_addr);
-    // Saaf saaf black kar do
+    // Initial Screen Clear (Blackout)
     for (uint32_t i = 0; i < 1024 * 768; i++) {
-      ((uint32_t *)fb_addr)[i] = 0x0;
+        ((uint32_t *)(uintptr_t)virtual_fb)[i] = 0;
     }
 
-    // 8. User Space ki shuruat
-    init_multitasking();
+    // 8. Process & Scheduler Initialization
+    // CRITICAL: Initialize multitasking structures BEFORE booting secondary cores
+    init_multitasking(g_pdpt_phys_addr);
 
-    // gui_main ko kernel thread ki tarah start karo
-    serial_log("KERNEL: Starting GUI System...");
-    create_kernel_thread(gui_main);
+    // 9. Start Multi-Core SMP
+    extern volatile uint32_t g_cores_online;
+    g_cores_online = 0x1; // Mark BSP as online (Bit 0)
 
-    // Networking thread
+    serial_log("SMP: Starting secondary cores...\n");
+    smp_init();
+
+    // 10. MOBILIZATION GATE: Wait for all 4 cores OR at least Core 1 + Timeout
+    serial_log("KERNEL: Waiting for SMP mobilization (Target: Core 1 ready)...");
+    uint32_t last_mask = 0;
+    uint32_t wait_count = 0;
+    // Condition: Exit if all 4 online, OR if Core 1 is online and we've waited a bit
+    while (g_cores_online != 0xF && wait_count < 20000000) {
+        if (g_cores_online != last_mask) {
+            serial_log_hex("\nKERNEL: Mobilization Bitmask Update: ", g_cores_online);
+            last_mask = g_cores_online;
+            
+            // Optimization: If Core 1 (GUI) is online, we can potentially proceed sooner
+            if ((g_cores_online & 0x03) == 0x03 && wait_count > 5000000) break;
+        }
+        wait_count++;
+        asm volatile("" ::: "memory"); 
+        asm volatile("pause");
+    }
+
+    if (g_cores_online == 0xF) {
+        serial_log("KERNEL: 4-Core Mobilization Complete. Full System READY.");
+        
+        // Rev R: Interrupt Steering
+        // Core 1 (Index 1) is GUI. Route Mouse (12) and Keyboard (1)
+        uint8_t core1_apic = cpu_apic_ids[1];
+        ioapic_route_irq(1, core1_apic);
+        ioapic_route_irq(12, core1_apic);
+        
+        // Core 2 (Index 2) is Brain. Route AHCI (11)
+        uint8_t core2_apic = cpu_apic_ids[2];
+        ioapic_route_irq(11, core2_apic);
+        
+        serial_log("KERNEL: Interrupt Steering Active (GUI=Core1, AI=Core2, Sys=Core0)");
+    } else {
+        serial_log_hex("KERNEL: WARNING — Mobilization Timeout. Bitmask: ", g_cores_online);
+    }
+
+    // Spawn high-level threads only after all hardware is verified
+    process_t* gui_proc = create_kernel_thread(gui_main);
+    if(gui_proc) {
+        gui_proc->pinned_cpu = 1;
+        gui_proc->priority = 50;
+    }
+    serial_log("KERNEL: GUI thread spawned (CPU=1).\n");
+    
+    // Spawn Networking thread (Core 3)
     serial_log("KERNEL: Starting Net System...");
-    create_kernel_thread(net_thread);
+    process_t* net_proc = create_kernel_thread(net_thread);
+    if(net_proc) {
+        net_proc->pinned_cpu = 3;
+        net_proc->priority = 50;
+    }
+    serial_log("KERNEL: Net thread spawned (CPU=3).\n");
 
-    // User space start karo - Non-GUI INIT chala rahe hain
-    create_user_process("INIT.ELF", nullptr);
-    init_timer(50);
+    serial_log("KERNEL: Starting Scheduler...");
+    init_timer(100); // Start scheduler at 100Hz
+    
+    // Ring 2 Brain Setup
+    void brain_mailbox_init(void);
+    brain_mailbox_init();
+
+    // Spawn AI Brain thread (Core 2)
+    serial_log("KERNEL: Spawning AI Brain thread...\n");
+    process_t* brain_proc = create_kernel_thread((void(*)())launch_ring2);
+    if(brain_proc) {
+        brain_proc->priority = 50;
+        brain_proc->pinned_cpu = 2;
+    }
+    serial_log("KERNEL: Brain thread spawned (CPU=2).\n");
+    
+    // 10. FINAL ACTION: Release APs and Enable Core 0 interrupts
+    extern volatile uint32_t g_smp_ready;
+    serial_log("KERNEL: Releasing secondary cores (g_smp_ready = 1)...");
+    g_smp_ready = 1;
+
+    // Small delay to ensure memory visibility and let APs exit parking
+    for(volatile int i = 0; i < 2000000; i++) asm volatile("pause");
+
+    serial_log("KERNEL: All Cores mobilized. Enabling global interrupts...");
+    asm volatile("sti");
+
+    // Load INIT.ELF
+    serial_log("KERNEL: Loading /C/INIT.ELF...");
+    if (create_user_process("/C/INIT.ELF", nullptr) < 0) {
+        serial_log("KERNEL: /C/INIT.ELF not found, trying /D/INIT.ELF...");
+        create_user_process("/D/INIT.ELF", nullptr);
+    }
+    
     serial_log("KERNEL: Higher-Half Kernel Running.");
   }
 
   while (1) {
     asm volatile("hlt");
   }
+
   return 0;
 }
