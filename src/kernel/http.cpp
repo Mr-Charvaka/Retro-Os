@@ -145,15 +145,22 @@ static int on_status(http_parser *p, const char *at, size_t length) {
   return 0;
 }
 
-static int http_parse_response(uint8_t *data, int len, http_response *resp) {
+static int http_parse_response(uint8_t *data, int len, http_response *resp, int max_len) {
+  serial_log("HTTP: Starting parse_response...");
   memset(resp, 0, sizeof(http_response));
   http_parser parser;
   http_parser_init(&parser, HTTP_RESPONSE);
   parser_context ctx;
   ctx.resp = resp;
-  // Use a temporary buffer to collect de-chunked body safely
-  ctx.temp_body_cap = 128 * 1024; // 128KB
+  ctx.temp_body_cap = max_len; 
+  
+  serial_log_hex("HTTP: Allocating temp_body, size=", max_len);
   ctx.temp_body = (uint8_t*)kmalloc(ctx.temp_body_cap);
+  if (!ctx.temp_body) {
+      serial_log("HTTP: kmalloc for temp_body FAILED!");
+      return -1;
+  }
+  serial_log("HTTP: kmalloc success.");
   parser.data = &ctx;
 
   http_parser_settings settings;
@@ -163,14 +170,38 @@ static int http_parse_response(uint8_t *data, int len, http_response *resp) {
   settings.on_body = on_body;
   settings.on_status = on_status;
 
-  http_parser_execute(&parser, &settings, (const char *)data, len);
+  serial_log("HTTP: Bypassing complex parser library for stability...");
+  /*
+  int parsed = http_parser_execute(&parser, &settings, (const char *)data, len);
+  serial_log_hex("HTTP: Parser finished, parsed bytes=", parsed);
+  */
+  
+  // Manual header skip for maximum leniency
+  const char *body_ptr = strstr((const char*)data, "\r\n\r\n");
+  if (body_ptr) {
+      resp->body_length = len - ((uint8_t*)body_ptr + 4 - data);
+      memcpy(ctx.temp_body, body_ptr + 4, resp->body_length);
+      serial_log_hex("HTTP: Manual body found, length=", resp->body_length);
+  } else {
+      body_ptr = strstr((const char*)data, "\n\n");
+      if (body_ptr) {
+          resp->body_length = len - ((uint8_t*)body_ptr + 2 - data);
+          memcpy(ctx.temp_body, body_ptr + 2, resp->body_length);
+          serial_log_hex("HTTP: Manual body found (\n\n), length=", resp->body_length);
+      }
+  }
 
   if (resp->body_length > 0) {
-      // Overwrite the original buffer with the clean, de-chunked body
+      serial_log_hex("HTTP: Body found, length=", resp->body_length);
       memcpy(data, ctx.temp_body, resp->body_length);
       resp->body = data;
+  } else {
+      serial_log("HTTP: No body found by parser.");
   }
+  
+  serial_log("HTTP: Freeing temp_body...");
   kfree(ctx.temp_body);
+  serial_log("HTTP: parse_response done.");
   return 0;
 }
 
@@ -255,7 +286,7 @@ extern "C" int http_get(const char *url, uint8_t *buffer, int max_len,
       tcp_close(conn);
       return -1;
     }
-    net_poll();
+    // net_poll();
     schedule();
   }
 
@@ -296,7 +327,7 @@ extern "C" int http_get(const char *url, uint8_t *buffer, int max_len,
       break;
     if (timer_now_ms() - start > HTTP_TIMEOUT_MS)
       break;
-    net_poll();
+    // net_poll();
     schedule();
   }
 
@@ -305,7 +336,29 @@ extern "C" int http_get(const char *url, uint8_t *buffer, int max_len,
   tcp_close(conn);
 
   if (total_received > 0 && resp) {
-    http_parse_response(buffer, total_received, resp);
+    serial_log_hex("HTTP: Parsing response, total_received=", total_received);
+    http_parse_response(buffer, total_received, resp, max_len);
+    
+    // Fallback: If parser didn't find a body, try manual search
+    if (resp->body_length == 0) {
+        serial_log("HTTP: Standard parser found no body, trying manual skip...");
+        const char *body_ptr = strstr((const char*)buffer, "\r\n\r\n");
+        if (body_ptr) {
+            resp->body = (uint8_t*)(body_ptr + 4);
+            resp->body_length = total_received - (resp->body - buffer);
+        } else {
+            body_ptr = strstr((const char*)buffer, "\n\n");
+            if (body_ptr) {
+                resp->body = (uint8_t*)(body_ptr + 2);
+                resp->body_length = total_received - (resp->body - buffer);
+            } else {
+                serial_log("HTTP: No separator found, using raw data.");
+                resp->body = buffer;
+                resp->body_length = total_received;
+            }
+        }
+    }
+    serial_log_hex("HTTP: Final body_length=", resp->body_length);
     if (resp->body) {
       // Contiguous copy body to front of buffer
       memmove(buffer, resp->body, resp->body_length);

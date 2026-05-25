@@ -99,6 +99,7 @@ build_app "libc_demo"
 build_app "netsurf_demo"
 build_app "r3test"
 build_app "brain"
+build_app "lite_browser"
 
 # 5. Link Kernel
 echo "Linking Kernel..."
@@ -157,7 +158,7 @@ python3 inject_wallpaper.py HDD.img \
     WAVPLAY.ELF:apps/wavplay.elf \
     CHAOS.ELF:apps/chaos.elf \
     AUDIO.ELF:apps/audio_demo.elf \
-    BROWSER.ELF:apps/netsurf_demo.elf \
+    BROWSER.ELF:apps/lite_browser.elf \
     R3TEST.ELF:apps/r3test.elf \
     BRAIN.ELF:apps/brain.elf
 

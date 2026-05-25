@@ -402,22 +402,58 @@ void flatten_tree(Node *n, Style current_style, bool hide_content) {
 }*/
 
 void execute_scripts(Node *n) {
-  /*if (!n) return;
-  if (n->type == NodeType::ELEMENT_NODE) {
-    ElementNode *el = (ElementNode *)n;
-    if (strcmp(el->tag_name, "script") == 0) {
-      if (el->first_child && el->first_child->type == NodeType::TEXT_NODE) {
-        TextNode *tn = (TextNode *)el->first_child;
-        if (g_browser.js) {
-          serial_log("BROWSER: Executing inline script...");
-          js_dostring(g_browser.js, tn->text);
-        }
+}
+
+void lenient_parse(const char *p) {
+  serial_log("BROWSER: Using lenient fallback parser...");
+  node_count = 0;
+  
+  const char *src = p;
+  char text_buf[256];
+  int buf_idx = 0;
+  bool in_tag = false;
+
+  Style default_s;
+  default_s.color = 0x00000000; // Black
+  default_s.font_size = 8;
+  default_s.is_block = false;
+  default_s.is_bold = false;
+
+  while (*src && node_count < MAX_NODES) {
+    if (*src == '<') {
+      in_tag = true;
+      if (buf_idx > 0) {
+        text_buf[buf_idx] = 0;
+        LayoutNode *ln = &nodes[node_count++];
+        strncpy(ln->text, text_buf, 255);
+        strcpy(ln->tag, "text");
+        ln->style = default_s;
+        buf_idx = 0;
+      }
+    } else if (*src == '>') {
+      in_tag = false;
+    } else if (!in_tag) {
+      if (*src == '&') {
+          // Very basic entity skip
+          while (*src && *src != ';' && (src - p < 10)) src++;
+      } else if (*src != '\r' && *src != '\n' && *src != '\t') {
+          text_buf[buf_idx++] = *src;
+          if (buf_idx >= 254) {
+            text_buf[buf_idx] = 0;
+            LayoutNode *ln = &nodes[node_count++];
+            strncpy(ln->text, text_buf, 255);
+            strcpy(ln->tag, "text");
+            ln->style = default_s;
+            buf_idx = 0;
+          }
+      } else if (buf_idx > 0 && text_buf[buf_idx-1] != ' ') {
+          text_buf[buf_idx++] = ' ';
       }
     }
+    src++;
   }
-  for (Node *child = n->first_child; child; child = child->next_sibling) {
-    execute_scripts(child);
-  }*/
+  
+  serial_log_hex("BROWSER: Lenient parse finished, total_nodes=", node_count);
 }
 
 void parse_html() {
@@ -426,11 +462,24 @@ void parse_html() {
 
   // Skip Headers
   const char *body_start = strstr(p, "\r\n\r\n");
-  if (body_start)
+  if (body_start) {
     p = body_start + 4;
+  } else {
+    body_start = strstr(p, "\n\n");
+    if (body_start) p = body_start + 2;
+  }
 
   if (g_browser.response.body && g_browser.response.body_length > 0) {
     p = (const char *)g_browser.response.body;
+  }
+  
+  serial_log_hex("BROWSER: Parsing HTML, len=", strlen(p));
+  if (strlen(p) > 0) {
+      char preview[65];
+      strncpy(preview, p, 64);
+      preview[64] = 0;
+      serial_log("BROWSER: Body preview: ");
+      serial_log(preview);
   }
 
   HTML5Parser parser;
@@ -453,6 +502,12 @@ void parse_html() {
     execute_scripts(doc);
     delete doc;
   }
+  
+  if (node_count == 0) {
+      lenient_parse(p);
+  }
+  
+  serial_log_hex("BROWSER: Parse complete, node_count=", node_count);
 }
 
 // ----------------------------------------------------------------------------

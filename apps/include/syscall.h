@@ -171,6 +171,7 @@
 #define SYS_FB_SWAP 153
 #define SYS_PTY_CREATE 154
 #define SYS_NET_PING 155
+#define SYS_HTTP_GET 158
 
 #define AF_UNIX 1
 #define SOCK_STREAM 1
@@ -631,6 +632,14 @@ static inline int syscall_nanosleep(const struct timespec *req,
   asm volatile("int $0x80"
                : "=a"(res)
                : "a"(SYS_NANOSLEEP), "b"(req), "c"(rem));
+  return res;
+}
+
+static inline int syscall_http_get(const char *url, uint8_t *buf, int max_len) {
+  int res;
+  asm volatile("int $0x80"
+               : "=a"(res)
+               : "a"(SYS_HTTP_GET), "b"(url), "c"(buf), "d"(max_len));
   return res;
 }
 

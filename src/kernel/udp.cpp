@@ -4,6 +4,7 @@
 #include "../drivers/serial.h"
 #include "../include/string.h"
 #include "net.h"
+#include "process.h" // For spinlocks
 #include <stddef.h>
 #include <stdint.h>
 
@@ -24,6 +25,7 @@ typedef void (*udp_handler_t)(uint32_t src_ip, uint16_t src_port, uint8_t *data,
                               uint16_t length);
 
 static udp_handler_t udp_port_table[UDP_MAX_PORTS];
+static volatile int g_udp_lock = 0; // SMP Lock
 
 /* ===================== CHECKSUM ===================== */
 
@@ -75,18 +77,22 @@ static uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, udp_hdr *udp,
 /* ===================== PUBLIC API ===================== */
 
 extern "C" void udp_bind(uint16_t port, udp_handler_t handler) {
+  spinlock_lock(&g_udp_lock);
   if (port < UDP_MAX_PORTS) {
     udp_port_table[port] = handler;
     serial_log_hex("UDP: Bound port ", port);
   } else {
     serial_log("UDP: Port out of range");
   }
+  spinlock_unlock(&g_udp_lock);
 }
 
 extern "C" void udp_unbind(uint16_t port) {
+  spinlock_lock(&g_udp_lock);
   if (port < UDP_MAX_PORTS) {
     udp_port_table[port] = nullptr;
   }
+  spinlock_unlock(&g_udp_lock);
 }
 
 /* ===================== RX ENTRY ===================== */
@@ -100,6 +106,7 @@ extern "C" void udp_receive(uint32_t src_ip, uint32_t dst_ip, uint8_t *packet,
 
   udp_hdr *udp = (udp_hdr *)packet;
 
+  spinlock_lock(&g_udp_lock);
   uint16_t dst_port = udp_ntohs(udp->dst);
   uint16_t src_port = udp_ntohs(udp->src);
   uint16_t udp_len = udp_ntohs(udp->len);
@@ -116,10 +123,13 @@ extern "C" void udp_receive(uint32_t src_ip, uint32_t dst_ip, uint8_t *packet,
 
   if (dst_port >= UDP_MAX_PORTS || !udp_port_table[dst_port]) {
     serial_log("UDP: No handler for this port");
+    spinlock_unlock(&g_udp_lock);
     return;
   }
 
-  udp_port_table[dst_port](src_ip, src_port, payload, payload_len);
+  udp_handler_t handler = udp_port_table[dst_port];
+  spinlock_unlock(&g_udp_lock);
+  handler(src_ip, src_port, payload, payload_len);
 }
 
 /* ===================== TX API ===================== */

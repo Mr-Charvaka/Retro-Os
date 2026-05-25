@@ -13,9 +13,9 @@ Write-Host "Cores: 4 | Memory: 2GB | Graphics: VESA/BGA" -ForegroundColor Gray
     -m 2G `
     -smp 4 `
     -machine q35 `
-    -drive file=os.img, format=raw `
-    -drive file=brain_disk.img, format=raw `
+    -drive file=os.img,format=raw `
+    -drive file=brain_disk.img,format=raw `
     -serial stdio `
     -vga std `
-    -device e1000, netdev=net0 `
-    -netdev user, id=net0
+    -device e1000,netdev=net0 `
+    -netdev user,id=net0

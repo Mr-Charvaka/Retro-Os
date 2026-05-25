@@ -262,7 +262,8 @@ extern "C" int sys_vfs_list(const char *path, char names[][64], int max) {
   return count;
 }
 
-static vfs_node_t *k_fd_table[32];
+static vfs_node_t *k_fd_table[32] = {0};
+static uint64_t k_fd_offsets[32] = {0}; // File offset per kernel FD
 
 // Helper to resolve handle to node
 static vfs_node_t *resolve_k_fd(int fd) {
@@ -282,6 +283,7 @@ extern "C" int sys_open(const char *path, int flags) {
   for (int i = 0; i < 32; i++) {
     if (k_fd_table[i] == 0) {
       k_fd_table[i] = node;
+      k_fd_offsets[i] = 0; // Reset offset on open
       return i + 1000; // Offset to avoid conflict with process FDs if shared
     }
   }
@@ -315,6 +317,7 @@ extern "C" int sys_readdir(int fd, uint32_t index, void *buf) {
 extern "C" int sys_close(int fd) {
   if (fd >= 1000 && fd < 1032) {
     k_fd_table[fd - 1000] = 0;
+    k_fd_offsets[fd - 1000] = 0;
   }
   return 0;
 }
@@ -323,7 +326,13 @@ extern "C" int sys_read(int fd, void *buf, uint32_t len) {
   vfs_node_t *node = resolve_k_fd(fd);
   if (!node)
     return -1;
-  return vfs_read(node, 0, buf, len);
+  int idx = (fd >= 1000 && fd < 1032) ? (fd - 1000) : -1;
+  uint64_t offset = (idx >= 0) ? k_fd_offsets[idx] : 0;
+  int n = vfs_read(node, (uint32_t)offset, buf, len);
+  if (n > 0 && idx >= 0) {
+    k_fd_offsets[idx] += n;
+  }
+  return n;
 }
 
 extern "C" int sys_mkdir(const char *path, int perms) {

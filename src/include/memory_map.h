@@ -46,7 +46,7 @@
 // --- Kernel Heap (kmalloc) ---
 #define KHEAP_PHYS_START        0x01000000
 #define KHEAP_VIRT_START        0xC1000000
-#define KHEAP_SIZE              0x20000000  // 512 MB
+#define KHEAP_SIZE              0x10000000  // 256 MB (Fits within 512MB mapping)
 #define KHEAP_PHYS_END          (KHEAP_PHYS_START + KHEAP_SIZE)  // 0x21000000
 #define KHEAP_VIRT_END          (KHEAP_VIRT_START + KHEAP_SIZE)  // 0xE1000000
 

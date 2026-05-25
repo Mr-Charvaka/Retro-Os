@@ -67,6 +67,7 @@ void *kmalloc_internal(uint32_t size, int align, uint32_t *phys) {
   void *buddy_ptr = buddy_alloc(&kheap.buddy, required_size);
   if (!buddy_ptr) {
     serial_log("HEAP: OOM in Buddy Allocator!");
+    serial_log_hex("  Requested size: ", required_size);
     return nullptr;
   }
 

@@ -24,6 +24,11 @@ static int get_order_floor(size_t n) {
 }
 
 void buddy_init(buddy_t *b, uintptr_t start, uintptr_t end) {
+  serial_log("BUDDY: Initializing...");
+  serial_log_hex("  Start: ", (uint32_t)start);
+  serial_log_hex("  End:   ", (uint32_t)end);
+  serial_log_hex("  Size:  ", (uint32_t)(end - start));
+
   b->start_addr = start;
   b->end_addr = end;
   for (int i = 0; i < BUDDY_NUM_ORDERS; i++) {

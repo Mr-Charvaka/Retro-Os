@@ -174,8 +174,8 @@ process_t *create_kernel_thread(void (*fn)()) {
   new_proc->time_remaining = DEFAULT_TIME_SLICE;
   new_proc->sleep_until = 0;
 
-  uint32_t *stack = (uint32_t *)kmalloc(16384);
-  uint32_t *top = stack + 4096;
+  uint32_t *stack = (uint32_t *)kmalloc(65536);
+  uint32_t *top = stack + 16384; // 64KB / 4 bytes per uint32
 
   *(--top) = (uint32_t)(uintptr_t)fn;
   *(--top) = 0;
@@ -279,6 +279,7 @@ extern "C" int create_user_process(const char *filename, char *const argv[]) {
   serial_log_hex("PROC: Created user process from ", entry);
 
   process_t *new_proc = (process_t *)kmalloc(sizeof(process_t));
+  memset(new_proc, 0, sizeof(process_t));
   new_proc->id = next_pid++;
   new_proc->state = PROCESS_READY;
   new_proc->parent = current_process;
@@ -286,6 +287,11 @@ extern "C" int create_user_process(const char *filename, char *const argv[]) {
   new_proc->page_directory = phys_pd;
   new_proc->heap_end = top_addr;
   new_proc->pledges = PLEDGE_ALL;
+  new_proc->pinned_cpu = -1; // Any core by default
+  new_proc->priority = DEFAULT_PRIORITY;
+  new_proc->time_slice = DEFAULT_TIME_SLICE;
+  new_proc->time_remaining = DEFAULT_TIME_SLICE;
+  new_proc->sleep_until = 0;
 
   for (int i = 0; i < MAX_PROCESS_FILES; i++)
     new_proc->fd_table[i] = 0;
@@ -511,6 +517,7 @@ int fork_process(registers_t *parent_regs) {
   }
 
   process_t *child = (process_t *)kmalloc(sizeof(process_t));
+  memset(child, 0, sizeof(process_t));
   child->id = next_pid++;
   child->state = PROCESS_READY;
   child->parent = current_process;
@@ -521,6 +528,11 @@ int fork_process(registers_t *parent_regs) {
   child->heap_end = current_process->heap_end;
   cwd_inherit(child->cwd, current_process->cwd); // Fix #3: ghost-CWD guard
   child->pledges = current_process->pledges;
+  child->pinned_cpu = current_process->pinned_cpu;
+  child->priority = current_process->priority;
+  child->time_slice = current_process->time_slice;
+  child->time_remaining = current_process->time_slice;
+  child->sleep_until = 0;
 
   for (int i = 0; i < MAX_PROCESS_FILES; i++) {
     child->fd_table[i] = current_process->fd_table[i];

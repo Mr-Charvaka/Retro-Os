@@ -197,5 +197,13 @@ static inline int ioctl(int fd, uint32_t request, void *arg) {
   return res;
 }
 
+static inline int http_get(const char *url, uint8_t *buf, int max_len) {
+  int res;
+  asm volatile("int $0x80"
+               : "=a"(res)
+               : "a"(SYS_HTTP_GET), "b"(url), "c"(buf), "d"(max_len));
+  return res;
+}
+
 } // namespace Syscall
 } // namespace OS

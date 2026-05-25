@@ -6,7 +6,7 @@
    ========================================================= */
 
 #include "../drivers/serial.h"
-// Browser include removed
+#include "../include/browser.h"
 #include "../include/font.h"
 #include "../include/gui_common.h"
 #include "../include/string.h"
@@ -192,27 +192,69 @@ void load_wallpaper(const char* path) {
     if (g_wall_w < 0) g_wall_w = -g_wall_w;
     if (g_wall_h < 0) g_wall_h = -g_wall_h;
 
+    serial_log_hex("GUI: BMP type=", h.type);
+    serial_log_hex("GUI: BMP offset=", h.offset);
+    serial_log_hex("GUI: BMP width=", (uint32_t)g_wall_w);
+    serial_log_hex("GUI: BMP height=", (uint32_t)g_wall_h);
+    serial_log_hex("GUI: BMP bits=", ih.bit_count);
+
+    // Safety check: prevent OOM from giant or corrupt BMPs
+    if (g_wall_w <= 0 || g_wall_h <= 0 || g_wall_w > 4096 || g_wall_h > 4096) {
+        serial_log("GUI: ERROR - Wallpaper dimensions invalid, rejected.");
+        sys_close(fd);
+        return;
+    }
+
     // Allocate buffer for 32-bit wallpaper
     g_wallpaper = (uint32_t*)malloc(g_wall_w * g_wall_h * 4);
-    if (!g_wallpaper) { sys_close(fd); return; }
+    if (!g_wallpaper) { serial_log("GUI: Wallpaper alloc failed"); sys_close(fd); return; }
 
-    // Jump to pixel data (Simple sequential read for now since it's just after headers)
-    // Most BMPs use 24-bit with 4-byte row padding.
-    uint8_t* row_buf = (uint8_t*)malloc(g_wall_w * 3 + 4);
+    // Bulk read all pixel data in one shot (much faster than row-by-row)
+    int row_stride = (g_wall_w * 3 + 3) & ~3; // BMP row padding to 4-byte boundary
+    int pixel_data_size = row_stride * g_wall_h;
+    uint8_t* pixel_buf = (uint8_t*)malloc(pixel_data_size);
+    if (!pixel_buf) { serial_log("GUI: Pixel buffer alloc failed"); free(g_wallpaper); g_wallpaper = nullptr; sys_close(fd); return; }
+    
+    // Skip to pixel data offset (already read 14+40=54 bytes of headers)
+    // The BMP data offset (h.offset) tells us where pixels start
+    // We've already read 54 bytes, so skip any remaining gap
+    int headers_read = sizeof(BMPHeader) + sizeof(BMPInfoHeader);
+    if ((int)h.offset > headers_read) {
+        int skip = h.offset - headers_read;
+        uint8_t skip_buf[128];
+        while (skip > 0) {
+            int chunk = (skip > 128) ? 128 : skip;
+            sys_read(fd, skip_buf, chunk);
+            skip -= chunk;
+        }
+    }
+
+    int total_read = 0;
+    while (total_read < pixel_data_size) {
+        int chunk = pixel_data_size - total_read;
+        if (chunk > 32768) chunk = 32768; // Read in 32KB chunks
+        int n = sys_read(fd, pixel_buf + total_read, chunk);
+        if (n <= 0) break;
+        total_read += n;
+    }
+    serial_log_hex("GUI: Wallpaper bytes read: ", total_read);
+    
+    // Convert BGR rows (bottom-up) to ARGB top-down
     for (int y = g_wall_h - 1; y >= 0; y--) {
-        sys_read(fd, row_buf, (g_wall_w * 3 + 3) & ~3);
+        uint8_t* row = pixel_buf + y * row_stride;
         for (int x = 0; x < g_wall_w; x++) {
-            uint8_t b = row_buf[x * 3];
-            uint8_t g = row_buf[x * 3 + 1];
-            uint8_t r = row_buf[x * 3 + 2];
+            uint8_t b = row[x * 3];
+            uint8_t g = row[x * 3 + 1];
+            uint8_t r = row[x * 3 + 2];
             g_wallpaper[y * g_wall_w + x] = (0xFF << 24) | (r << 16) | (g << 8) | b;
         }
     }
-    free(row_buf);
+    free(pixel_buf);
     sys_close(fd);
     serial_log("GUI: Wallpaper loaded successfully.");
 }
 } // namespace AssetLoader
+
 
 namespace DesktopSystem {
 void refresh();
@@ -1324,7 +1366,7 @@ void refresh() {
       }
       else if (strstr(tmp.name, "Terminal")) launch = launch_terminal;
       else if (strstr(tmp.name, "Calculator")) launch = launch_calculator;
-      else if (strstr(tmp.name, "Browser")) continue; // Explicitly skip Browser icon
+      else if (strstr(tmp.name, "Browser")) launch = launch_browser;
       // Notepad and Office links removed
       // Browser links removed
       else if (strstr(tmp.name, "Explorer")) launch = launch_explorer_home;
@@ -2329,9 +2371,26 @@ void terminal_key(Window *w, int key, int state) {
 
 } // namespace TerminalSystem
 
+static char g_browser_url[256];
+void browser_nav_thread_fn() {
+    Browser::navigate(g_browser_url);
+}
+
 void launch_browser() {
-  serial_log("GUI: Launching Browser...");
-  sys_spawn("/C/BROWSER.ELF", nullptr);
+  serial_log("GUI: Launching Kernel Browser...");
+  Browser::init(false); // is_dillo = false
+  
+  // Create window FIRST so it appears on screen immediately
+  Window *w = create_window(50, 50, 800, 600, "Retro-OS Browser", nullptr,
+                            Browser::draw, Browser::click);
+  if (w) {
+    w->wants_keyboard = true;
+    w->key = Browser::key;
+    
+    // Spawn a kernel thread for navigation to prevent GUI hang
+    strcpy(g_browser_url, "http://info.cern.ch");
+    create_kernel_thread(browser_nav_thread_fn);
+  }
 }
 
 void launch_terminal() {
@@ -2865,7 +2924,8 @@ namespace WindowServer {
 
 #define WS_PORT "/tmp/ws.sock"
 static int server_fd = -1;
-static int client_fds[16]; // Max 16 clients for now
+static int client_fds[16];        // Fully handshaked clients
+static bool client_pending[16];   // true = accepted but CREATE_WINDOW not yet received
 static int client_count = 0;
 
 struct msg_gfx_create_window_t {
@@ -3005,8 +3065,10 @@ void handle_client_msg(int fd) {
 }
 
 void init() {
-  for (int i = 0; i < 16; i++)
+  for (int i = 0; i < 16; i++) {
     client_fds[i] = -1;
+    client_pending[i] = false;
+  }
 
   server_fd = sys_socket(AF_UNIX, SOCK_STREAM, 0);
   if (server_fd < 0) {
@@ -3031,34 +3093,40 @@ void poll() {
   if (server_fd < 0)
     return;
 
-  // 1. Accept new clients
+  // 1. Accept new clients (non-blocking — just register, do NOT call handle_client_setup yet)
   if (socket_can_accept(server_fd)) {
     int client = sys_accept(server_fd);
     if (client >= 0) {
-      if (client_count < 16) {
-        for (int i = 0; i < 16; i++) {
-          if (client_fds[i] == -1) {
-            client_fds[i] = client;
-            client_count++;
-            serial_log("WS: Client connected, handling handshake...");
-
-            // process immediately for now (Blocking but short)
-            handle_client_setup(client);
-            break;
-          }
+      bool registered = false;
+      for (int i = 0; i < 16; i++) {
+        if (client_fds[i] == -1) {
+          client_fds[i] = client;
+          client_pending[i] = true; // Waiting for CREATE_WINDOW
+          client_count++;
+          serial_log("WS: Client accepted, waiting for CREATE_WINDOW...");
+          registered = true;
+          break;
         }
-      } else {
+      }
+      if (!registered) {
         serial_log("WS: Too many clients, dropping");
         sys_close(client);
       }
     }
   }
 
-  // 2. Poll existing clients
+  // 2. Poll all slots — pending ones need handshake, established ones get msgs
   for (int i = 0; i < 16; i++) {
     int fd = client_fds[i];
-    if (fd != -1) {
-      if (socket_can_read(fd)) {
+    if (fd == -1) continue;
+
+    if (socket_can_read(fd)) {
+      if (client_pending[i]) {
+        // Browser has written CREATE_WINDOW — now handle setup safely
+        serial_log("WS: CREATE_WINDOW data ready, running handshake...");
+        handle_client_setup(fd);
+        client_pending[i] = false;
+      } else {
         handle_client_msg(fd);
       }
     }

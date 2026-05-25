@@ -7,6 +7,7 @@
 #include "heap.h"
 #include "memory.h"
 #include "net.h"
+#include "process.h" // For spinlocks
 #include <stddef.h>
 #include <stdint.h>
 
@@ -112,6 +113,8 @@ typedef struct {
     // ── Duplicate ACK state (for fast-retransmit signalling) ─────────────
     uint32_t dup_ack_count;
     uint32_t last_ack_seen;
+
+    volatile int lock; // SMP Lock
 } tcp_tcb_t;
 
 /* ================= GLOBALS ================= */
@@ -367,6 +370,8 @@ extern "C" void tcp_handle_packet(uint32_t src_ip, uint32_t dst_ip,
     if (!tcb)
         return;
 
+    spinlock_lock(&tcb->lock);
+
     uint16_t hdr_len = (tcp->offset_reserved >> 4) * 4;
     // Guard against malformed header lengths
     if (hdr_len < sizeof(tcp_header_t) || hdr_len > len)
@@ -512,6 +517,7 @@ extern "C" void tcp_handle_packet(uint32_t src_ip, uint32_t dst_ip,
     default:
         break;
     }
+    spinlock_unlock(&tcb->lock);
 }
 
 /* ================= PUBLIC API ================= */
@@ -519,13 +525,17 @@ extern "C" void tcp_handle_packet(uint32_t src_ip, uint32_t dst_ip,
 extern "C" int tcp_send_data(tcp_tcb_t *tcb, void *data, uint16_t len) {
     if (!tcb || tcb->state != TCP_ESTABLISHED)
         return -1;
+    spinlock_lock(&tcb->lock);
     tcp_send_segment(tcb, TCP_ACK | TCP_PSH, data, len);
+    spinlock_unlock(&tcb->lock);
     return len;
 }
 
 extern "C" int tcp_read_data(tcp_tcb_t *tcb, void *buffer, uint16_t len) {
     if (!tcb)
         return -1;
+    
+    spinlock_lock(&tcb->lock);
     uint16_t to_read = (uint16_t)(len < tcb->rx_len ? len : tcb->rx_len);
     uint8_t *dest    = (uint8_t *)buffer;
     for (uint16_t i = 0; i < to_read; i++) {
@@ -533,6 +543,8 @@ extern "C" int tcp_read_data(tcp_tcb_t *tcb, void *buffer, uint16_t len) {
         tcb->rx_tail = (tcb->rx_tail + 1) % tcb->rx_capacity;
     }
     tcb->rx_len -= to_read;
+    spinlock_unlock(&tcb->lock);
+    
     return (int)to_read;
 }
 
@@ -549,8 +561,7 @@ extern "C" void tcp_close(tcp_tcb_t *tcb) {
 }
 
 extern "C" int tcp_is_connected(tcp_tcb_t *tcb) {
-    return tcb && (tcb->state == TCP_ESTABLISHED ||
-                   tcb->state == TCP_CLOSE_WAIT);
+    return tcb && (tcb->state == TCP_ESTABLISHED);
 }
 
 extern "C" int tcp_has_data(tcp_tcb_t *tcb) {

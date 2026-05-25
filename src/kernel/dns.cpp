@@ -5,6 +5,7 @@
 #include "../include/string.h"
 #include "heap.h"
 #include "net.h"
+#include "process.h" // For spinlocks
 #include <stddef.h>
 #include <stdint.h>
 
@@ -76,6 +77,7 @@ static uint16_t dns_tx_id = 0x1234;
 static volatile int dns_response_received = 0;
 static volatile uint32_t dns_resolved_ip = 0;
 static volatile uint16_t dns_pending_id = 0;
+static volatile int g_dns_lock = 0; // SMP Lock
 
 // -- Async callback support (Fix #4) ------------------------------------------
 // Callers that cannot block (GUI thread, interrupt context helpers) register
@@ -253,6 +255,7 @@ static uint32_t dns_cache_lookup(const char *name) {
 
 static void dns_rx_handler(uint32_t src_ip, uint16_t src_port, uint8_t *data,
                            uint16_t length) {
+  spinlock_lock(&g_dns_lock);
   (void)src_ip;
   (void)src_port;
 
@@ -346,11 +349,13 @@ static void dns_rx_handler(uint32_t src_ip, uint16_t src_port, uint8_t *data,
     serial_log("DNS: No A record found");
     dns_response_received = -1;
   }
+  spinlock_unlock(&g_dns_lock);
 }
 
 /* ===================== DNS QUERY ===================== */
 
 static void dns_send_query(const char *hostname, uint16_t qtype) {
+  spinlock_lock(&g_dns_lock);
   uint8_t packet[512];
   memset(packet, 0, sizeof(packet));
 
@@ -378,6 +383,7 @@ static void dns_send_query(const char *hostname, uint16_t qtype) {
   dns_pending_id = dns_tx_id++;
   dns_response_received = 0;
   dns_resolved_ip = 0;
+  spinlock_unlock(&g_dns_lock);
 
   serial_log("DNS: Sending query for ");
   serial_log(hostname);
@@ -422,8 +428,8 @@ extern "C" uint32_t dns_resolve(const char *hostname) {
   int      retries = 0;
 
   while (retries < DNS_MAX_RETRIES) {
-    // Poll NIC and dispatch incoming packets
-    net_poll();
+    // Poll NIC is now handled by dedicated thread
+    // net_poll();
 
     if (dns_response_received == 1) {
       dns_cache_insert(hostname, dns_resolved_ip, 300);
